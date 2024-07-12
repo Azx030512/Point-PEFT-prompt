@@ -1,13 +1,18 @@
+import os
+os.environ['OMP_NUM_THREADS']='2'
+os.environ['MKL_NUM_THREADS']='2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ["CUDA_LAUNCH_BLOCKING"] = '1'
 from tools import pretrain_run_net as pretrain
 from tools import finetune_run_net as finetune
 from tools import test_run_net as test_net
 from tools import cp_run_net as cache_prompt
+from tools import prompt_run_net as point_prompt
 
 from utils import parser, dist_utils, misc
 from utils.logger import *
 from utils.config import *
 import time
-import os
 import torch
 from tensorboardX import SummaryWriter
 
@@ -78,11 +83,14 @@ def main():
         
     # run
     if args.cache_prompt:
-        cache_prompt(args, config, config_cp, train_writer, val_writer)
+        print('prompt tuning starts!')
+        point_prompt(args, config, config_cp, train_writer, val_writer)
+        # cache_prompt(args, config, config_cp, train_writer, val_writer)
     elif args.test:
         test_net(args, config, config_cp)
     else:
         if args.finetune_model or args.scratch_model:
+            print('finetuning starts!')
             finetune(args, config, train_writer, val_writer)
         else:
             pretrain(args, config, train_writer, val_writer)

@@ -87,10 +87,10 @@ def main():
     elif args.finetune_model:
         finetune(args, config, train_writer, val_writer)
     else:
-        if args.test_svm == 'modelnet40':
-            test_svm_modelnet40(args, config)
-        else:
-            pretrain(args, config, train_writer, val_writer)
+        # if args.test_svm == 'modelnet40':
+        #     # test_svm_modelnet40(args, config)
+        # else:
+        pretrain(args, config, train_writer, val_writer)
 
 
 if __name__ == '__main__':

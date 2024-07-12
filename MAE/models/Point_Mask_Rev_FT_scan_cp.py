@@ -106,8 +106,8 @@ class Encoder(nn.Module):   ## Embedding module
         feature = self.first_conv(point_groups.transpose(2,1))  # BG 256 n
         feature_global = torch.max(feature,dim=2,keepdim=True)[0]  # BG 256 1
         feature = torch.cat([feature_global.expand(-1,-1,n), feature], dim=1)# BG 512 n
-        feature = self.second_conv(feature) # BG 1024 n
-        feature_global = torch.max(feature, dim=2, keepdim=False)[0] # BG 1024
+        feature = self.second_conv(feature) # BG 384 n
+        feature_global = torch.max(feature, dim=2, keepdim=False)[0] # BG 384
         return feature_global.reshape(bs, g, self.encoder_channel)
 
 
@@ -705,6 +705,392 @@ class PointTransformer_best(nn.Module):
         return mask, dist
 
     def forward(self, pts, cache=False, cp_feat=None, args=None, label=None):
+
+        neighborhood, center, idx, center_idx = self.group_divider(pts)
+        group_input_tokens = self.encoder(neighborhood)  # B G N
+        #new_add
+        prompt_cor = self.prompt_cor.repeat(pts.shape[0], 1, 1)
+        prompt_pts = torch.cat((prompt_cor, pts), dim=1)
+        neighborhood_prompt, center_prompt, idx_prompt, center_idx_prompt = self.group_divider(prompt_pts)
+        #neighborhood_prompt, center_prompt, idx_prompt, center_idx_prompt = neighborhood, center, idx, center_idx
+        ####
+        cls_tokens = self.cls_token.expand(group_input_tokens.size(0), -1, -1)
+        cls_pos = self.cls_pos.expand(group_input_tokens.size(0), -1, -1)
+
+        pos = self.pos_embed(center)
+
+        x = torch.cat((cls_tokens, group_input_tokens), dim=1)
+        pos = torch.cat((cls_pos, pos), dim=1)
+        #x = group_input_tokens
+
+        xyz_dist = None
+        if self.masking_radius > 0:
+                mask_radius, xyz_dist = self.compute_mask(center, self.masking_radius, xyz_dist)
+                mask_vis_att = mask_radius
+        else:
+            mask_vis_att = None
+        # transformer
+        self.group = Group(num_group=int(self.num_group/2), group_size=int(self.group_size/2))
+        neighborhood, center_new, idx, center_idx = self.group(center)
+        ##new_add
+        neighborhood_prompt, center_new_prompt, idx_prompt, center_idx_prompt = self.group(center_prompt)
+        ####
+        cache_prompt=None
+
+        cp_feat=cp_feat#[0]
+        if cp_feat != None:
+                K = prompt_cor.shape[1] - 2 # kre
+                cp_feat_norm = cp_feat / cp_feat.norm(dim=-1, keepdim=True) #[B, 384]
+                new_knowledge = cp_feat_norm @ self.train_images_features_agg#.transpose(0,1) #[B, 11392]
+                new_knowledge_k, idx_k = torch.topk(new_knowledge, K) #[B, 2*K]
+                new_knowledge_k = F.softmax(new_knowledge_k, dim=1).unsqueeze(1)
+                train_features_k = []
+                for p in range(idx_k.shape[0]):
+                    train_features_k.append(self.train_images_features_agg[:, idx_k[p]].tolist())
+                #ipdb.set_trace()
+                train_features_k = torch.tensor(train_features_k).permute(0, 2, 1).cuda() #[B, K, 384].cuda()
+                feat_f = torch.matmul(new_knowledge_k, train_features_k) #[B, 1, 384]
+
+                cache_prompt = torch.cat((cp_feat.unsqueeze(1), feat_f, train_features_k), 1)
+        else:
+            cache_prompt=None
+        #x = self.blocks(x, pos, mask_vis_att, center, center2=center_new ,neighborhood=neighborhood, idx=idx,center_idx=center_idx, group_size=int(self.group_size/2), cp_feat=cp_feat,  if_maxmean=args.if_maxmean, pro_cof=args.propagate_cof, center_cof=args.center_cof, ad_cof=args.ad_cof)
+        x,attn_weight = self.blocks(x, pos, mask_vis_att, center_prompt, center2=center_new_prompt ,neighborhood=neighborhood_prompt, idx=idx_prompt,center_idx=center_idx_prompt, group_size=int(self.group_size/2), cache_prompt=cache_prompt,  if_maxmean=args.if_maxmean, pro_cof=args.propagate_cof, center_cof=args.center_cof, ad_cof=args.ad_cof, center_layer = center, center2_layer=center_new ,neighborhood_layer=neighborhood, idx_layer=idx,center_idx_layer=center_idx)
+        x = self.norm(x)
+        concat_f = torch.cat([x[:, 0], x[:, 1:].max(1)[0]], dim=-1)
+
+        if cache == True:
+            for i in range(len(self.cls_head_finetune) - 1):
+                concat_f = self.cls_head_finetune[i](concat_f)
+            return concat_f
+        ret = self.cls_head_finetune(concat_f)
+        return ret
+
+
+class Group(nn.Module):  # FPS + KNN
+    def __init__(self, num_group, group_size):
+        super().__init__()
+        self.num_group = num_group
+        self.group_size = group_size
+        self.knn = KNN(k=self.group_size, transpose_mode=True)
+
+    def forward(self, xyz):
+        '''
+            input: B N 3
+            ---------------------------
+            output: B G M 3
+            center : B G 3
+        '''
+        batch_size, num_points, _ = xyz.shape
+        # fps the centers out
+        center,center_idx = misc.fps(xyz, self.num_group) # B G 3
+        # knn to get the neighborhood
+        _, idx = self.knn(xyz, center) # B G M
+        assert idx.size(1) == self.num_group
+        assert idx.size(2) == self.group_size
+        idx_base = torch.arange(0, batch_size, device=xyz.device).view(-1, 1, 1) * num_points
+        idx = idx + idx_base
+        idx = idx.view(-1)
+
+        center_idx_base = torch.arange(0, batch_size, device=xyz.device).view(-1, 1) * num_points
+        center_idx = center_idx + center_idx_base
+        center_idx = center_idx.view(-1)
+
+        neighborhood = xyz.view(batch_size * num_points, -1)[idx, :]
+        neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, 3).contiguous()
+        # normalize
+        neighborhood = neighborhood - center.unsqueeze(2)
+        return neighborhood, center, idx, center_idx
+
+
+
+class PositionalEmbedding(nn.Module):
+    def __init__(self, N_freqs, logscale=True):
+        """
+        Defines a function that embeds x to (x, sin(2^k x), cos(2^k x), ...)
+        in_channels: number of input channels (3 for both xyz and direction)
+        """
+        super().__init__()
+        self.N_freqs = N_freqs
+        self.funcs = [torch.sin, torch.cos]
+
+        if logscale:
+            self.freq_bands = 2**torch.linspace(0, N_freqs-1, N_freqs)#[2^0,2^1,...,2^(n-1)]
+        else:
+            self.freq_bands = torch.linspace(1, 2**(N_freqs-1), N_freqs)
+
+    def forward(self, x):
+        """
+        Embeds x to (x, sin(2^k x), cos(2^k x), ...) 
+        Different from the paper, "x" is also in the output
+        See https://github.com/bmild/nerf/issues/12
+        Inputs:
+            x: (B, f)
+
+        Outputs:
+            out: (B, 2*f*N_freqs+f)
+        """
+        out = [x]
+        for freq in self.freq_bands:#[2^0,2^1,...,2^(n-1)]
+            for func in self.funcs:
+                out += [func(freq*x)]
+        #!!!!相当于63维，多了三个基础坐标——>[x,y,z,sin(2^0Πpi),cos.......]
+        #xyz——>63,dir——>27
+        return torch.cat(out, -1)#变成一个63的元素
+
+class PointNet(nn.Module):   ## Embedding module
+    def __init__(self, encoder_channel):
+        super().__init__()
+        self.encoder_channel = encoder_channel
+        self.first_conv = nn.Sequential(
+            nn.Conv1d(3, 128, 1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(128, 256, 1)
+        )
+        self.second_conv = nn.Sequential(
+            nn.Conv1d(512, 512, 1),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(512, self.encoder_channel, 1)
+        )
+
+    def forward(self, point_groups):
+        '''
+            point_groups : B G N 3
+            -----------------
+            feature_global : B G C
+        '''
+        bs, g, n , _ = point_groups.shape
+        point_groups = point_groups.reshape(bs * g, n, 3)
+        # encoder
+        feature = self.first_conv(point_groups.transpose(2,1))  # BG 256 n
+        feature_global = torch.max(feature,dim=2,keepdim=True)[0]  # BG 256 1
+        feature = torch.cat([feature_global.expand(-1,-1,n), feature], dim=1)# BG 512 n
+        feature = self.second_conv(feature) # BG 1024 n
+        feature_global = torch.max(feature, dim=2, keepdim=False)[0] # BG 1024
+        return feature_global.reshape(bs, g, self.encoder_channel)
+
+
+class ShiftNet(nn.Module):
+    def __init__(self, in_channels, out_channels, hidden_dimesion=128, perturbation=0.1, embedding_level=4, num_group = 32, group_size = 32):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.num_group = num_group
+        self.group_size = group_size
+        self.group_divider = Group(num_group, group_size)
+        self.position_embedding = PositionalEmbedding(embedding_level)
+        self.conv1 = nn.Conv1d(in_channels*(2*embedding_level+1), hidden_dimesion//2, 2)
+        self.mlp_position = nn.Sequential(
+            nn.Linear(in_channels*(2*embedding_level+1), hidden_dimesion//2),
+            nn.ReLU()
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dimesion, hidden_dimesion),
+            nn.ReLU(),
+            nn.Linear(hidden_dimesion, out_channels),
+        )
+        self.perturbation = perturbation
+        for layer in self.mlp:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.constant_(layer.bias, val=0.0)
+    
+    def forward(self, x):
+        B, N, _ = x.shape  #[32, 1024, 3]
+        dtype = x.dtype
+        neighborhood, center, idx, center_idx = self.group_divider(x.float()) #[B, G, n, 3]
+        neighborhood = neighborhood.to(dtype)
+        center = center.to(dtype)
+        embedding = self.position_embedding(neighborhood)  #[B, G, n, 27]
+        feature1 = self.mlp_position(self.position_embedding(x))
+        feature2 = torch.max(self.conv1(embedding.transpose(2,3).reshape([B*self.num_group, -1, self.group_size])),dim=2,keepdim=False)[0]
+        feature2 = feature2.reshape([B, self.num_group, -1]).repeat(1,N//self.num_group,1)
+        feature = torch.cat([feature1, feature2], -1)
+        y = self.mlp(feature)*self.perturbation
+        y = y + x
+        return y
+
+class PointPrompt(nn.Module):
+    def __init__(self, point_number=128, init_type='uniform', scale=0.04, factor=10):
+        super().__init__()
+        self.point_number = point_number
+        self.points = nn.Parameter(torch.zeros([1, point_number, 3], dtype=torch.float32), requires_grad=True)
+        self.scale = scale
+        self.factor = factor
+        if init_type == 'uniform':
+            nn.init.uniform_(self.points, -self.scale, self.scale)
+        elif init_type == 'cluster':
+            means = [
+                [-self.scale, 0, 0],
+                [self.scale, 0, 0],
+                [0, -self.scale, 0],
+                [0, self.scale, 0]
+            ]
+            cov = np.eye(3) * 0.04
+            num_points_per_cluster = point_number//len(means)
+            points = []
+            for mean in means:
+                cluster_points = np.random.multivariate_normal(mean, cov, num_points_per_cluster)
+                points.append(cluster_points)
+            
+            with torch.no_grad():
+                self.points.copy_(torch.tensor(np.vstack(points).reshape([1, point_number, 3])))
+    
+    def forward(self, x):
+        learnable_points = self.points.repeat(x.shape[0], 1, 1) * self.factor
+        x = torch.cat([x, learnable_points], dim=1)
+        return x
+
+
+# finetune model
+@MODELS.register_module()
+class PointTransformer_prompt(nn.Module):
+    def __init__(self, config, **kwargs):
+        super().__init__()
+        self.config = config
+
+        self.trans_dim = config.trans_dim
+        self.depth = config.depth
+        self.drop_path_rate = config.drop_path_rate
+        self.cls_dim = config.cls_dim
+        self.num_heads = config.num_heads
+
+        self.group_size = config.group_size
+        self.num_group = config.num_group
+        self.encoder_dims = config.encoder_dims
+        self.adapter_dim = config.adapter_config.adapter_dim
+        self.drop_rate_adapter = config.adapter_config.adapter_drop_path_rate
+
+        self.group_divider = Group(num_group=self.num_group, group_size=self.group_size)
+
+        self.encoder = Encoder(encoder_channel=self.encoder_dims)
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.trans_dim))
+        self.cls_pos = nn.Parameter(torch.randn(1, 1, self.trans_dim))
+
+        self.pos_embed = nn.Sequential(
+            nn.Linear(3, 128),
+            nn.GELU(),
+            nn.Linear(128, self.trans_dim)
+        )
+
+        self.masking_radius = 1.28
+
+        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, self.depth)]
+
+        self.prompt_cor = nn.Parameter(torch.zeros(10, 3))
+        trunc_normal_(self.prompt_cor, std=.02)
+
+        self.blocks = TransformerEncoder(
+            embed_dim=self.trans_dim,
+            depth=self.depth,
+            drop_path_rate=dpr,
+            num_heads=self.num_heads,
+            adapter_dim=self.adapter_dim, 
+            drop_rate_adapter=self.drop_rate_adapter,
+            num_tokens=10,
+            if_third=True,
+            if_one=False,
+            if_two=False,
+            if_half = config.if_half,
+        )
+
+        self.norm = nn.LayerNorm(self.trans_dim)
+        self.propagation_0 = PointNetFeaturePropagation()
+        self.train_images_features_agg = torch.load("./ckpts/train_f_pos_shape_scan.pt")
+        self.cls_head_finetune = nn.Sequential(
+                nn.Linear(self.trans_dim * 2, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.5),
+                nn.Linear(256, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.5),
+                nn.Linear(256, self.cls_dim)
+            )
+        #Point Prompt
+        self.point_prompt = None
+        self.point_prompt = PointPrompt(point_number=128, init_type='uniform')
+        self.shift_net = None
+        self.shift_net = ShiftNet(3,3,hidden_dimesion=128,perturbation=0.1,embedding_level=4,num_group=32,group_size=32)
+        self.build_loss_func()
+
+        trunc_normal_(self.cls_token, std=.02)
+        trunc_normal_(self.cls_pos, std=.02)
+
+    def build_loss_func(self):
+        self.loss_ce = nn.CrossEntropyLoss()
+
+    def get_loss_acc(self, ret, gt):
+        loss = self.loss_ce(ret, gt.long())
+        pred = ret.argmax(-1)
+        acc = (pred == gt).sum() / float(gt.size(0))
+        return loss, acc * 100
+
+    def load_model_from_ckpt(self, bert_ckpt_path):
+        if bert_ckpt_path is not None:
+            ckpt = torch.load(bert_ckpt_path)
+            base_ckpt = {k.replace("module.", ""): v for k, v in ckpt['base_model'].items()}
+
+            for k in list(base_ckpt.keys()):
+                if k.startswith('MAE_encoder') :
+                    base_ckpt[k[len('MAE_encoder.'):]] = base_ckpt[k]
+                    del base_ckpt[k]
+                elif k.startswith('base_model'):
+                    base_ckpt[k[len('base_model.'):]] = base_ckpt[k]
+                    del base_ckpt[k]
+
+            incompatible = self.load_state_dict(base_ckpt, strict=False)
+
+            if incompatible.missing_keys:
+                print_log('missing_keys', logger='Transformer')
+                print_log(
+                    get_missing_parameters_message(incompatible.missing_keys),
+                    logger='Transformer'
+                )
+            if incompatible.unexpected_keys:
+                print_log('unexpected_keys', logger='Transformer')
+                print_log(
+                    get_unexpected_parameters_message(incompatible.unexpected_keys),
+                    logger='Transformer'
+                )
+
+            print_log(f'[Transformer] Successful Loading the ckpt from {bert_ckpt_path}', logger='Transformer')
+        else:
+            print_log('Training from scratch!!!', logger='Transformer')
+            self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv1d):
+            trunc_normal_(m.weight, std=.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def compute_mask(self, xyz, radius, dist=None):
+        with torch.no_grad():
+            if dist is None or dist.shape[1] != xyz.shape[1]:
+                dist = torch.cdist(xyz, xyz, p=2)
+            mask = dist >= radius
+        return mask, dist
+
+    def forward(self, pts, cache=False, cp_feat=None, args=None, label=None):
+        pts = pts.to('cuda') # [batch_size, 1024, 3]
+        batch_size = pts.shape[0]
+        point_number = pts.shape[1]
+        if self.shift_net:
+            pts = self.shift_net(pts)
+        if self.point_prompt:
+            pts = self.point_prompt(pts) # [batch_size, 1024+128, 3]
 
         neighborhood, center, idx, center_idx = self.group_divider(pts)
         group_input_tokens = self.encoder(neighborhood)  # B G N

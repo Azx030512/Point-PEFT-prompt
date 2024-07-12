@@ -16,7 +16,8 @@ from torchvision import transforms
 
 train_transforms = transforms.Compose(
     [
-         data_transforms.PointcloudScaleAndTranslate(),
+        data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
+        data_transforms.PointcloudRotate(),
     ]
 )
 
@@ -225,7 +226,7 @@ def validate(base_model, test_dataloader, epoch, val_writer, args, config, logge
             points = data[0].cuda()
             label = data[1].cuda()
 
-            points = misc.fps(points, npoints)
+            points, idx = misc.fps(points, npoints)
 
             logits = base_model(points)
             target = label.view(-1)

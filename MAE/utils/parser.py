@@ -7,11 +7,12 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
+        default= './cfgs/finetune_scan_hardest.yaml',
         help = 'yaml config file')
     parser.add_argument(
         '--cache_prompt', 
         action='store_true', 
-        default=False, 
+        default=True, 
         help = 'use cache enhancement')
     parser.add_argument(
         '--launcher',
@@ -19,7 +20,7 @@ def get_args():
         default='none',
         help='job launcher')     
     parser.add_argument('--local_rank', type=int, default=0)
-    parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=3)
     # seed 
     parser.add_argument('--seed', type=int, default=0, help='random seed')
     parser.add_argument(
@@ -33,10 +34,10 @@ def get_args():
         default=False, 
         help='whether to use sync bn')
     # some args
-    parser.add_argument('--exp_name', type = str, default='default', help = 'experiment name')
+    parser.add_argument('--exp_name', type = str, default='pointprompt-on-pointpeft-objectnnhard', help = 'experiment name')
     parser.add_argument('--loss', type=str, default='cd1', help='loss name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
-    parser.add_argument('--ckpts', type = str, default=None, help = 'test used ckpt path')
+    parser.add_argument('--ckpts', type = str, default='experiments/finetune_scan_hardest/cfgs/pointprompt-objectnnhard/ckpt-best.pth', help = 'test used ckpt path') #./ckpts/pretrain.pth
     parser.add_argument('--val_freq', type = int, default=1, help = 'test freq')
     parser.add_argument(
         '--vote',
@@ -56,7 +57,7 @@ def get_args():
     parser.add_argument(
         '--finetune_model', 
         action='store_true', 
-        default=False, 
+        default=True, 
         help = 'finetune modelnet with pretrained weight')
     parser.add_argument(
         '--scratch_model', 
