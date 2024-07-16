@@ -94,9 +94,11 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
-    
+        
+    print_log("Require gradient parameters: ", logger = logger)
     for name, param in base_model.named_parameters():
         if 'attn_free_linear' in name or "cp" in name or "adapter1" in name or "norm3" in name or "attn1." in name or  "out_transform" in name or ".adapter." in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'prompt_cor' in name or 'cache_gate' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "norm." in name or ".gate" in name or "ad_gate" in name or "prompt_embedding" in name: 
+            print_log(name, logger = logger)
             param.requires_grad_(True)
         else:
             param.requires_grad_(False)

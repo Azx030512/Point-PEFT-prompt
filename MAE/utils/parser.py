@@ -34,10 +34,10 @@ def get_args():
         default=False, 
         help='whether to use sync bn')
     # some args
-    parser.add_argument('--exp_name', type = str, default='pointprompt-on-pointpeft-objectnnhard', help = 'experiment name')
+    parser.add_argument('--exp_name', type = str, default='PEFT-no-cacheprompt', help = 'experiment name') #only-pointtokenprompt-tuning
     parser.add_argument('--loss', type=str, default='cd1', help='loss name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
-    parser.add_argument('--ckpts', type = str, default='experiments/finetune_scan_hardest/cfgs/pointprompt-objectnnhard/ckpt-best.pth', help = 'test used ckpt path') #./ckpts/pretrain.pth
+    parser.add_argument('--ckpts', type = str, default='ckpts/pretrain.pth', help = 'test used ckpt path') #./ckpts/pretrain.pth
     parser.add_argument('--val_freq', type = int, default=1, help = 'test freq')
     parser.add_argument(
         '--vote',

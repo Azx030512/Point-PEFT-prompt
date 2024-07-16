@@ -8,8 +8,8 @@ optimizer : {
 scheduler: {
   type: CosLR,
   kwargs: {
-    epochs: 300,
-    initial_epochs : 10
+    epochs: 300,  #300
+    initial_epochs : 10  #10
 }}
 
 dataset : {
@@ -21,7 +21,7 @@ dataset : {
             others: {subset: 'test'}}}
 
 model : {
-  NAME: PointTransformer_prompt, # PointTransformer_best PointTransformer
+  NAME: PointTransformer_best, # PointTransformer_best PointTransformer PointTransformer_prompt PointTransformer_module PointTransformer_pointtokenpromt
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,

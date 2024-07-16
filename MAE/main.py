@@ -1,14 +1,14 @@
 import os
 os.environ['OMP_NUM_THREADS']='2'
 os.environ['MKL_NUM_THREADS']='2'
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 os.environ["CUDA_LAUNCH_BLOCKING"] = '1'
 from tools import pretrain_run_net as pretrain
 from tools import finetune_run_net as finetune
 from tools import test_run_net as test_net
 from tools import cp_run_net as cache_prompt
 from tools import prompt_run_net as point_prompt
-
+from tools import module_run_net as module_tune
 from utils import parser, dist_utils, misc
 from utils.logger import *
 from utils.config import *
@@ -90,8 +90,10 @@ def main():
         test_net(args, config, config_cp)
     else:
         if args.finetune_model or args.scratch_model:
-            print('finetuning starts!')
-            finetune(args, config, train_writer, val_writer)
+            # print('finetuning starts!')
+            # finetune(args, config, train_writer, val_writer)
+            print('module tuning starts!')
+            module_tune(args, config, train_writer, val_writer)
         else:
             pretrain(args, config, train_writer, val_writer)
 

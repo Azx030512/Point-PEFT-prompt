@@ -310,10 +310,10 @@ class Block(nn.Module):
     layer_id=None):
         # NOTE prompt with zero-inti attn
         B, G1, G2 = mask.shape
-        mask_new = torch.zeros([B,G1+self.num_tokens+1,G2+self.num_tokens+1]).cuda()
-        mask_new[:, self.num_tokens+1:, self.num_tokens+1:] = mask
+        # mask_new = torch.zeros([B,G1+self.num_tokens+1,G2+self.num_tokens+1]).cuda()
+        # mask_new[:, self.num_tokens+1:, self.num_tokens+1:] = mask
 
-        mask = mask_new # true:not contribute
+        # mask = mask_new # true:not contribute
         if layer_id<=5:
             prompt = self.prompt_dropout(self.prompt_embeddings.repeat(center2.shape[0], 1, 1))
 
@@ -342,8 +342,8 @@ class Block(nn.Module):
             x_neighborhoods = prompt_x.reshape(B*G, -1)[idx, :].reshape(B*center2.shape[1], group_size, -1)
             x_centers = prompt_x.reshape(B*G, -1)[center_idx, :].reshape(B, center2.shape[1], -1)
             
-            std_xyz = torch.std(neighborhood)
-            neighborhood = neighborhood / (std_xyz + 1e-5)
+            # std_xyz = torch.std(neighborhood)
+            # neighborhood = neighborhood / (std_xyz + 1e-5)
             x_neighborhoods = self.drop_path(attn1(norm3(x_neighborhoods.clone())))+x_neighborhoods.clone()
 
             vis_x = self.pooling(x_neighborhoods.reshape(B, center2.shape[1], group_size, -1), if_maxmean)+0.3*x_centers#B,G1,C
@@ -871,25 +871,36 @@ class PointNet(nn.Module):   ## Embedding module
         feature_global = torch.max(feature, dim=2, keepdim=False)[0] # BG 1024
         return feature_global.reshape(bs, g, self.encoder_channel)
 
-
 class ShiftNet(nn.Module):
-    def __init__(self, in_channels, out_channels, hidden_dimesion=128, perturbation=0.1, embedding_level=4, num_group = 32, group_size = 32):
+    def __init__(self, in_channels, out_channels, hidden_dimesion=256, perturbation=0.1, embedding_level=4, num_group = 32, group_size = 32):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.hidden_dimesion = hidden_dimesion
         self.num_group = num_group
         self.group_size = group_size
         self.group_divider = Group(num_group, group_size)
         self.position_embedding = PositionalEmbedding(embedding_level)
-        self.conv1 = nn.Conv1d(in_channels*(2*embedding_level+1), hidden_dimesion//2, 2)
+        self.first_conv = nn.Sequential(
+            nn.Conv1d(self.in_channels, self.hidden_dimesion//2, 1),
+            nn.BatchNorm1d(self.hidden_dimesion//2),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(self.hidden_dimesion//2, self.hidden_dimesion, 1)
+        )
+        self.second_conv = nn.Sequential(
+            nn.Conv1d(self.hidden_dimesion*2, self.hidden_dimesion*2, 1),
+            nn.BatchNorm1d(self.hidden_dimesion*2),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(self.hidden_dimesion*2, self.hidden_dimesion//2, 1)
+        )
         self.mlp_position = nn.Sequential(
-            nn.Linear(in_channels*(2*embedding_level+1), hidden_dimesion//2),
+            nn.Linear(in_channels*(2*embedding_level+1), self.hidden_dimesion//2),
             nn.ReLU()
         )
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_dimesion, hidden_dimesion),
+            nn.Linear(self.hidden_dimesion, self.hidden_dimesion),
             nn.ReLU(),
-            nn.Linear(hidden_dimesion, out_channels),
+            nn.Linear(self.hidden_dimesion, self.out_channels),
         )
         self.perturbation = perturbation
         for layer in self.mlp:
@@ -897,23 +908,70 @@ class ShiftNet(nn.Module):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.constant_(layer.bias, val=0.0)
     
-    def forward(self, x):
+    def forward(self, x, require_global_feature=False):
         B, N, _ = x.shape  #[32, 1024, 3]
         dtype = x.dtype
         neighborhood, center, idx, center_idx = self.group_divider(x.float()) #[B, G, n, 3]
         neighborhood = neighborhood.to(dtype)
-        center = center.to(dtype)
-        embedding = self.position_embedding(neighborhood)  #[B, G, n, 27]
-        feature1 = self.mlp_position(self.position_embedding(x))
-        feature2 = torch.max(self.conv1(embedding.transpose(2,3).reshape([B*self.num_group, -1, self.group_size])),dim=2,keepdim=False)[0]
-        feature2 = feature2.reshape([B, self.num_group, -1]).repeat(1,N//self.num_group,1)
-        feature = torch.cat([feature1, feature2], -1)
-        y = self.mlp(feature)*self.perturbation
+        neighborhood = neighborhood.reshape(B*self.num_group, self.group_size, 3)
+        feature_local = self.first_conv(neighborhood.transpose(2,1))  # BG 256 n
+        feature_global = torch.max(feature_local,dim=2,keepdim=True)[0]  # BG 256 1
+        feature_local = torch.cat([feature_global.expand(-1,-1,self.group_size), feature_local], dim=1)# BG 512 n
+        feature_local = self.second_conv(feature_local) # BG 64 n
+        feature_global = torch.max(feature_local, dim=2, keepdim=False)[0] # BG 1024
+        feature_global = feature_global.reshape(B, self.num_group, -1)
+        feature_global = torch.mean(feature_global, 1, keepdim=True)
+        feature = self.mlp_position(self.position_embedding(x))
+        feature = torch.cat([feature, feature_global.repeat(1,N,1)], -1)
+        y = self.mlp(feature) * self.perturbation * x
         y = y + x
-        return y
+        if require_global_feature:
+            return y, feature_global
+        else:
+            return y
+
+# class ShiftNet(nn.Module):  #version 7.12
+#     def __init__(self, in_channels, out_channels, hidden_dimesion=128, perturbation=0.1, embedding_level=4, num_group = 32, group_size = 32):
+#         super().__init__()
+#         self.in_channels = in_channels
+#         self.out_channels = out_channels
+#         self.num_group = num_group
+#         self.group_size = group_size
+#         self.group_divider = Group(num_group, group_size)
+#         self.position_embedding = PositionalEmbedding(embedding_level)
+#         self.conv1 = nn.Conv1d(in_channels*(2*embedding_level+1), hidden_dimesion//2, 2)
+#         self.mlp_position = nn.Sequential(
+#             nn.Linear(in_channels*(2*embedding_level+1), hidden_dimesion//2),
+#             nn.ReLU()
+#         )
+#         self.mlp = nn.Sequential(
+#             nn.Linear(hidden_dimesion, hidden_dimesion),
+#             nn.ReLU(),
+#             nn.Linear(hidden_dimesion, out_channels),
+#         )
+#         self.perturbation = perturbation
+#         for layer in self.mlp:
+#             if isinstance(layer, nn.Linear):
+#                 nn.init.xavier_uniform_(layer.weight)
+#                 nn.init.constant_(layer.bias, val=0.0)
+    
+#     def forward(self, x):
+#         B, N, _ = x.shape  #[32, 1024, 3]
+#         dtype = x.dtype
+#         neighborhood, center, idx, center_idx = self.group_divider(x.float()) #[B, G, n, 3]
+#         neighborhood = neighborhood.to(dtype)
+#         center = center.to(dtype)
+#         embedding = self.position_embedding(neighborhood)  #[B, G, n, 27]
+#         feature1 = self.mlp_position(self.position_embedding(x))
+#         feature2 = torch.max(self.conv1(embedding.transpose(2,3).reshape([B*self.num_group, -1, self.group_size])),dim=2,keepdim=False)[0]
+#         feature2 = feature2.reshape([B, self.num_group, -1]).repeat(1,N//self.num_group,1)
+#         feature = torch.cat([feature1, feature2], -1)
+#         y = self.mlp(feature)*self.perturbation
+#         y = y + x
+#         return y
 
 class PointPrompt(nn.Module):
-    def __init__(self, point_number=128, init_type='uniform', scale=0.04, factor=10):
+    def __init__(self, point_number=128, init_type='uniform', scale=0.05, factor=8):   #peak learning rate 0.0005
         super().__init__()
         self.point_number = point_number
         self.points = nn.Parameter(torch.zeros([1, point_number, 3], dtype=torch.float32), requires_grad=True)
@@ -1011,11 +1069,11 @@ class PointTransformer_prompt(nn.Module):
                 nn.Dropout(0.5),
                 nn.Linear(256, self.cls_dim)
             )
-        #Point Prompt
+        # Point Prompt
         self.point_prompt = None
-        self.point_prompt = PointPrompt(point_number=128, init_type='uniform')
+        # self.point_prompt = PointPrompt(point_number=128, init_type='uniform')
         self.shift_net = None
-        self.shift_net = ShiftNet(3,3,hidden_dimesion=128,perturbation=0.1,embedding_level=4,num_group=32,group_size=32)
+        self.shift_net = ShiftNet(3,3,hidden_dimesion=256,perturbation=0.1,embedding_level=4,num_group=32,group_size=64)
         self.build_loss_func()
 
         trunc_normal_(self.cls_token, std=.02)
@@ -1125,19 +1183,19 @@ class PointTransformer_prompt(nn.Module):
 
         cp_feat=cp_feat#[0]
         if cp_feat != None:
-                K = prompt_cor.shape[1] - 2 # kre
-                cp_feat_norm = cp_feat / cp_feat.norm(dim=-1, keepdim=True) #[B, 384]
-                new_knowledge = cp_feat_norm @ self.train_images_features_agg#.transpose(0,1) #[B, 11392]
-                new_knowledge_k, idx_k = torch.topk(new_knowledge, K) #[B, 2*K]
-                new_knowledge_k = F.softmax(new_knowledge_k, dim=1).unsqueeze(1)
-                train_features_k = []
-                for p in range(idx_k.shape[0]):
-                    train_features_k.append(self.train_images_features_agg[:, idx_k[p]].tolist())
-                #ipdb.set_trace()
-                train_features_k = torch.tensor(train_features_k).permute(0, 2, 1).cuda() #[B, K, 384].cuda()
-                feat_f = torch.matmul(new_knowledge_k, train_features_k) #[B, 1, 384]
+            K = prompt_cor.shape[1] - 2 # kre
+            cp_feat_norm = cp_feat / cp_feat.norm(dim=-1, keepdim=True) #[B, 384]
+            new_knowledge = cp_feat_norm @ self.train_images_features_agg#.transpose(0,1) #[B, 11392]
+            new_knowledge_k, idx_k = torch.topk(new_knowledge, K) #[B, 2*K]
+            new_knowledge_k = F.softmax(new_knowledge_k, dim=1).unsqueeze(1)
+            train_features_k = []
+            for p in range(idx_k.shape[0]):
+                train_features_k.append(self.train_images_features_agg[:, idx_k[p]].tolist())
+            #ipdb.set_trace()
+            train_features_k = torch.tensor(train_features_k).permute(0, 2, 1).cuda() #[B, K, 384].cuda()
+            feat_f = torch.matmul(new_knowledge_k, train_features_k) #[B, 1, 384]
 
-                cache_prompt = torch.cat((cp_feat.unsqueeze(1), feat_f, train_features_k), 1)
+            cache_prompt = torch.cat((cp_feat.unsqueeze(1), feat_f, train_features_k), 1)
         else:
             cache_prompt=None
         #x = self.blocks(x, pos, mask_vis_att, center, center2=center_new ,neighborhood=neighborhood, idx=idx,center_idx=center_idx, group_size=int(self.group_size/2), cp_feat=cp_feat,  if_maxmean=args.if_maxmean, pro_cof=args.propagate_cof, center_cof=args.center_cof, ad_cof=args.ad_cof)
