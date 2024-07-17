@@ -5,16 +5,19 @@ from utils import misc, dist_utils
 import time
 from utils.logger import *
 from utils.AverageMeter import AverageMeter
-
+import os
+import ipdb
 import numpy as np
 from datasets import data_transforms
+import cv2
 from pointnet2_ops import pointnet2_utils
 from torchvision import transforms
 from tqdm import tqdm
 
 train_transforms = transforms.Compose(
     [
-         data_transforms.PointcloudScaleAndTranslate(),
+        data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
+        data_transforms.PointcloudRotate(),
     ]
 )
 
@@ -24,12 +27,6 @@ test_transforms = transforms.Compose(
     ]
 )
 
-train_transforms_scan = transforms.Compose(
-    [
-        data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
-        data_transforms.PointcloudRotate(),
-    ]
-)
 
 class Acc_Metric:
     def __init__(self, acc = 0.):
@@ -51,20 +48,13 @@ class Acc_Metric:
         _dict['acc'] = self.acc
         return _dict
 
-def run_net(args, config, config_cp, train_writer=None, val_writer=None):
+def run_net(args, config, train_writer=None, val_writer=None):
     logger = get_logger(args.log_name)
     # build dataset
-    (train_sampler, train_dataloader), (_, test_dataloader),= builder.dataset_builder(args, config.dataset.train), \
-                                                            builder.dataset_builder(args, config.dataset.val)
+    (train_sampler, train_dataloader), (_, test_dataloader) = builder.dataset_builder(args, config.dataset.train), builder.dataset_builder(args, config.dataset.val)
     # build model
     base_model = builder.model_builder(config.model)
-    #cp
-    cp_model = builder.model_builder(config_cp.model)
-    builder.load_model(cp_model, "./ckpts/pretrain.pth", logger = logger)
-    cp_model.to(args.local_rank)
-    cp_model.eval()
-    cp_model = nn.DataParallel(cp_model).cuda()
-
+    
     # parameter setting
     start_epoch = 0
     best_metrics = Acc_Metric(0.)
@@ -94,17 +84,22 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
-        
+    # optimizer & scheduler
+    optimizer, scheduler = builder.build_opti_sche(base_model, config)
+    
     print_log("Require gradient parameters: ", logger = logger)
     for name, param in base_model.named_parameters():
-        if 'attn_free_linear' in name or "cp" in name or "adapter1" in name or "norm3" in name or "attn1." in name or  "out_transform" in name or ".adapter." in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'prompt_cor' in name or 'cache_gate' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "norm." in name or ".gate" in name or "ad_gate" in name or "prompt_embedding" in name: 
+        # if 'point_prompt' in name or 'shift_net' in name or 'attn_free_linear' in name or "cp" in name or "adapter1" in name or "norm3" in name or "attn1." in name or  "out_transform" in name or ".adapter." in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'prompt_cor' in name or 'cache_gate' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "norm." in name or ".gate" in name or "ad_gate" in name or "prompt_embeddings" in name: 
+        #     print_log(name, logger = logger)
+        #     param.requires_grad_(True)
+        if 'point_prompt' in name or 'shift_net' in name or 'adapter' in name  or 'scaler' in name or 'shape_feature_mlp' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "prompt_embeddings" in name or 'prompt_cor' in name    or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name: 
             print_log(name, logger = logger)
             param.requires_grad_(True)
         else:
             param.requires_grad_(False)
 
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
-    
+
     if args.resume:
         builder.resume_optimizer(optimizer, args, logger = logger)
 
@@ -153,15 +148,9 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
             fps_idx = fps_idx[:, np.random.choice(point_all, npoints, False)]
             points = pointnet2_utils.gather_operation(points.transpose(1, 2).contiguous(), fps_idx).transpose(1, 2).contiguous()  # (B, N, 3)
             # import pdb; pdb.set_trace()
-            if config.model['NAME'] == 'PointTransformer_best': 
-                points = train_transforms_scan(points)
-                #points = train_transforms(points)
-            else:
-                points = train_transforms(points)#data_aug
+            points = train_transforms(points)
 
-            cp_feat = cp_model(points, eval=True)
-
-            ret = base_model(points, cp_feat=cp_feat, args=args)
+            ret = base_model(points)
 
             loss, acc = base_model.module.get_loss_acc(ret, label)
 
@@ -197,6 +186,7 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
 
             batch_time.update(time.time() - batch_start_time)
             batch_start_time = time.time()
+
         if isinstance(scheduler, list):
             for item in scheduler:
                 item.step(epoch)
@@ -212,7 +202,7 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
 
         if epoch % args.val_freq == 0 and epoch != 0:
             # Validate the current model
-            metrics = validate(base_model, cp_model, test_dataloader, epoch, val_writer, args, config, logger=logger)
+            metrics = validate(base_model, test_dataloader, epoch, val_writer, args, config, logger=logger)
 
             better = metrics.better_than(best_metrics)
             # Save ckeckpoints
@@ -231,31 +221,26 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
                         builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics_vote, 'ckpt-best_vote', args, logger = logger)
 
         builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-last', args, logger = logger)      
-        # if (config.max_epoch - epoch) < 10:
-        #     builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, f'ckpt-epoch-{epoch:03d}', args, logger = logger)
     if train_writer is not None:
         train_writer.close()
     if val_writer is not None:
         val_writer.close()
 
-def validate(base_model, cp_model, test_dataloader, epoch, val_writer, args, config, logger = None):
+def validate(base_model, test_dataloader, epoch, val_writer, args, config, logger = None):
     # print_log(f"[VALIDATION] Start validating epoch {epoch}", logger = logger)
     base_model.eval()  # set model to eval mode
 
     test_pred  = []
     test_label = []
     npoints = config.npoints
-    cp_model.eval()
     with torch.no_grad():
         for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
             points = data[0].cuda()
             label = data[1].cuda()
 
-            points,_ = misc.fps(points, npoints)
+            points, idx = misc.fps(points, npoints)
 
-            #logits = base_model(points)
-            cp_feat = cp_model(points, eval=True)
-            logits = base_model(points, cp_feat=cp_feat, args=args)
+            logits = base_model(points)
             target = label.view(-1)
 
             pred = logits.argmax(-1).view(-1)
@@ -349,13 +334,19 @@ def validate_vote(base_model, test_dataloader, epoch, val_writer, args, config, 
 
 
 
-def test_net(args, config):
+def test_net(args, config, config_cp):
     logger = get_logger(args.log_name)
     print_log('Tester start ... ', logger = logger)
     _, test_dataloader = builder.dataset_builder(args, config.dataset.test)
+
     base_model = builder.model_builder(config.model)
     # load checkpoints
     builder.load_model(base_model, args.ckpts, logger = logger) # for finetuned transformer
+
+    cp_model = builder.model_builder(config_cp.model)
+    builder.load_model(cp_model, "./ckpts/pretrain.pth", logger = logger)
+    cp_model.to(args.local_rank)
+    cp_model.eval()
     # base_model.load_model_from_ckpt(args.ckpts) # for BERT
     if args.use_gpu:
         base_model.to(args.local_rank)
@@ -364,31 +355,34 @@ def test_net(args, config):
     if args.distributed:
         raise NotImplementedError()
      
-    test(base_model, test_dataloader, args, config, logger=logger)
+    test(base_model, test_dataloader, args, config, logger=logger, cp_model=cp_model)
     
-def test(base_model, test_dataloader, args, config, logger = None):
+def test(base_model, test_dataloader, args, config, logger = None,cp_model=None):
 
     base_model.eval()  # set model to eval mode
 
     test_pred  = []
     test_label = []
     npoints = config.npoints
+    #npoints = 1024
 
     with torch.no_grad():
         for idx, (taxonomy_ids, model_ids, data) in enumerate(test_dataloader):
             points = data[0].cuda()
             label = data[1].cuda()
-
+    
             points = misc.fps(points, npoints)
-
-            logits = base_model(points)
+            #ipdb.set_trace()
+            points = points[0]
+            cp_feat, image_ori = cp_model(points, eval=True, label=label[0])
+            logits, image = base_model(points, cp_feat=cp_feat, args=args)
+            
             target = label.view(-1)
 
             pred = logits.argmax(-1).view(-1)
 
             test_pred.append(pred.detach())
             test_label.append(target.detach())
-
         test_pred = torch.cat(test_pred, dim=0)
         test_label = torch.cat(test_label, dim=0)
 
@@ -404,12 +398,12 @@ def test(base_model, test_dataloader, args, config, logger = None):
 
         print_log(f"[TEST_VOTE]", logger = logger)
         acc = 0.
-        for time in range(1, 300):
-            this_acc = test_vote(base_model, test_dataloader, 1, None, args, config, logger=logger, times=10)
-            if acc < this_acc:
-                acc = this_acc
-            print_log('[TEST_VOTE_time %d]  acc = %.4f, best acc = %.4f' % (time, this_acc, acc), logger=logger)
-        print_log('[TEST_VOTE] acc = %.4f' % acc, logger=logger)
+        # for time in range(1, 300):
+        #     this_acc = test_vote(base_model, test_dataloader, 1, None, args, config, logger=logger, times=10)
+        #     if acc < this_acc:
+        #         acc = this_acc
+        #     print_log('[TEST_VOTE_time %d]  acc = %.4f, best acc = %.4f' % (time, this_acc, acc), logger=logger)
+        #print_log('[TEST_VOTE] acc = %.4f' % acc, logger=logger)
 
 def test_vote(base_model, test_dataloader, epoch, val_writer, args, config, logger = None, times = 10):
 
@@ -445,6 +439,7 @@ def test_vote(base_model, test_dataloader, epoch, val_writer, args, config, logg
                 points = test_transforms(points)
 
                 logits = base_model(points)
+
                 target = label.view(-1)
 
                 local_pred.append(logits.detach().unsqueeze(0))
@@ -468,6 +463,7 @@ def test_vote(base_model, test_dataloader, epoch, val_writer, args, config, logg
         if args.distributed:
             torch.cuda.synchronize()
 
+    # Add testing results to TensorBoard
     if val_writer is not None:
         val_writer.add_scalar('Metric/ACC_vote', acc, epoch)
     # print_log('[TEST] acc = %.4f' % acc, logger=logger)

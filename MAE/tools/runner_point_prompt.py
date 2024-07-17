@@ -10,11 +10,14 @@ import numpy as np
 from datasets import data_transforms
 from pointnet2_ops import pointnet2_utils
 from torchvision import transforms
+import open3d as o3d
+import os
 from tqdm import tqdm
 
 train_transforms = transforms.Compose(
     [
-         data_transforms.PointcloudScaleAndTranslate(),
+        data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
+        data_transforms.PointcloudRotate(),
     ]
 )
 
@@ -94,10 +97,14 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
-        
+
     print_log("Require gradient parameters: ", logger = logger)
     for name, param in base_model.named_parameters():
-        if 'attn_free_linear' in name or "cp" in name or "adapter1" in name or "norm3" in name or "attn1." in name or  "out_transform" in name or ".adapter." in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'prompt_cor' in name or 'cache_gate' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "norm." in name or ".gate" in name or "ad_gate" in name or "prompt_embedding" in name: 
+        # if 'point_prompt' in name or 'shift_net' in name or 'attn_free_linear' in name or "cp" in name or "adapter1" in name or "norm3" in name or "attn1." in name or  "out_transform" in name or ".adapter." in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'prompt_cor' in name or 'cache_gate' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "norm." in name or ".gate" in name or "ad_gate" in name or "prompt_embedding" in name: 
+        #     print_log(name, logger = logger)
+        #     param.requires_grad_(True)
+        # # 
+        if 'point_prompt' in name or 'shift_net' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "prompt_embeddings" in name: #  or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name: 
             print_log(name, logger = logger)
             param.requires_grad_(True)
         else:
@@ -111,10 +118,26 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
     # trainval
     # training
     base_model.zero_grad()
+    #visualization point prompts in each epoch's change
+
+    prompt_point_cloud = o3d.geometry.PointCloud()
+    visualization = False
+    prompts = []
+    colors = []
+
     for epoch in range(start_epoch, config.max_epoch + 1):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         base_model.train()
+        if visualization:
+            prompts.append(base_model.module.point_prompt.points[0, 0:1].detach().cpu().numpy())
+            prompts.append(base_model.module.point_prompt.points[0, 10:11].detach().cpu().numpy())
+            colors.append(np.array([[0,0,1]]))
+            colors.append(np.array([[0,1,0]]))
+            prompt_point_cloud.points = o3d.utility.Vector3dVector(np.concatenate(prompts, 0))
+            prompt_point_cloud.colors = o3d.utility.Vector3dVector(np.concatenate(colors, 0))
+            # 保存点云到PLY文件
+            o3d.io.write_point_cloud(os.path.join(args.experiment_path,"./prompt_point_cloud.ply"), prompt_point_cloud)
 
         epoch_start_time = time.time()
         batch_start_time = time.time()
@@ -126,7 +149,7 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
         n_batches = len(train_dataloader)
 
         npoints = config.npoints
-        for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(train_dataloader)):
+        for idx, (taxonomy_ids, model_ids, data) in tqdm(enumerate(train_dataloader)):
             num_iter += 1
             n_itr = epoch * n_batches + idx
             
@@ -153,11 +176,11 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
             fps_idx = fps_idx[:, np.random.choice(point_all, npoints, False)]
             points = pointnet2_utils.gather_operation(points.transpose(1, 2).contiguous(), fps_idx).transpose(1, 2).contiguous()  # (B, N, 3)
             # import pdb; pdb.set_trace()
-            if config.model['NAME'] == 'PointTransformer_best': 
-                points = train_transforms_scan(points)
+            # if config.model['NAME'] == 'PointTransformer_best': 
+            points = train_transforms_scan(points)
                 #points = train_transforms(points)
-            else:
-                points = train_transforms(points)#data_aug
+            # else:
+            #     points = train_transforms(points)#data_aug
 
             cp_feat = cp_model(points, eval=True)
 
@@ -212,6 +235,7 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
 
         if epoch % args.val_freq == 0 and epoch != 0:
             # Validate the current model
+
             metrics = validate(base_model, cp_model, test_dataloader, epoch, val_writer, args, config, logger=logger)
 
             better = metrics.better_than(best_metrics)
@@ -229,10 +253,17 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
                             "****************************************************************************************",
                             logger=logger)
                         builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics_vote, 'ckpt-best_vote', args, logger = logger)
-
+        
         builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-last', args, logger = logger)      
         # if (config.max_epoch - epoch) < 10:
         #     builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, f'ckpt-epoch-{epoch:03d}', args, logger = logger)
+    
+    if visualization:
+        prompt_point_cloud.points = o3d.utility.Vector3dVector(np.concatenate(prompts, 0).values)
+        prompt_point_cloud.colors = o3d.utility.Vector3dVector(np.concatenate(colors, 0).values)
+        # 保存点云到PLY文件
+        o3d.io.write_point_cloud(os.path.join(args.experiment_path,"./prompt_point_cloud.ply"), prompt_point_cloud)
+
     if train_writer is not None:
         train_writer.close()
     if val_writer is not None:
@@ -245,9 +276,10 @@ def validate(base_model, cp_model, test_dataloader, epoch, val_writer, args, con
     test_pred  = []
     test_label = []
     npoints = config.npoints
+
     cp_model.eval()
     with torch.no_grad():
-        for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
+        for idx, (taxonomy_ids, model_ids, data) in enumerate(test_dataloader):
             points = data[0].cuda()
             label = data[1].cuda()
 
@@ -256,6 +288,8 @@ def validate(base_model, cp_model, test_dataloader, epoch, val_writer, args, con
             #logits = base_model(points)
             cp_feat = cp_model(points, eval=True)
             logits = base_model(points, cp_feat=cp_feat, args=args)
+            
+
             target = label.view(-1)
 
             pred = logits.argmax(-1).view(-1)

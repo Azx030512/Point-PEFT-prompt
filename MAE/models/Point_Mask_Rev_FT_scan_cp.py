@@ -360,6 +360,7 @@ class Block(nn.Module):
 
             x_fn = self.drop_path(self.mlp(self.norm2(x)))
             x = 0.7*self.adapter(x_fn) + x_fn + x 
+            
             B,G,_ = x.shape
 
             cls_x = x[:,0]
