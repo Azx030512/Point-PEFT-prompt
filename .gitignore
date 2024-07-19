@@ -1,0 +1,6 @@
+*.pyc
+__pycache__
+data/
+checkpoint/
+simulation_data/
+Pointnet2_PyTorch/
