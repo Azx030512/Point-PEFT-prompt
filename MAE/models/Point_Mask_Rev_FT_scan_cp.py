@@ -18,6 +18,7 @@ from torch.nn import Conv2d, Dropout
 from .adapter_super import AdapterSuper, AdapterSuper_f
 import ipdb
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
+from .PointPrompt import ShiftNet, PointPrompt
 
 class PointNetFeaturePropagation(nn.Module):
     def __init__(self):
@@ -322,7 +323,7 @@ class Block(nn.Module):
                 prompt = prompt + cache_prompt
 
             x = torch.cat((x[:,0].unsqueeze(1), prompt, x[:,1:]), 1)
-            x_fn,attn_weight = self.attn(self.norm1(x), prompt, mask) 
+            x_fn, attn_weight = self.attn(self.norm1(x), prompt, mask) 
             x = x_fn + x 
 
             x_fn = self.drop_path(self.mlp(self.norm2(x)))
@@ -341,15 +342,17 @@ class Block(nn.Module):
             ####
             x_neighborhoods = prompt_x.reshape(B*G, -1)[idx, :].reshape(B*center2.shape[1], group_size, -1)
             x_centers = prompt_x.reshape(B*G, -1)[center_idx, :].reshape(B, center2.shape[1], -1)
-            
+            # x_neighborhoods = x.reshape(B*G, -1)[idx, :].reshape(B*center2.shape[1], group_size, -1)
+            # x_centers = x.reshape(B*G, -1)[center_idx, :].reshape(B, center2.shape[1], -1)
             # std_xyz = torch.std(neighborhood)
             # neighborhood = neighborhood / (std_xyz + 1e-5)
             x_neighborhoods = self.drop_path(attn1(norm3(x_neighborhoods.clone())))+x_neighborhoods.clone()
-
+            # x_neighborhoods = self.drop_path(attn1(norm3(x_neighborhoods)))+x_neighborhoods
             vis_x = self.pooling(x_neighborhoods.reshape(B, center2.shape[1], group_size, -1), if_maxmean)+0.3*x_centers#B,G1,C
             x = self.propagate(xyz1=center1, xyz2=center2, points1=x, points2=vis_x, de_neighbors=center2.shape[1], pro_cof=pro_cof)
             x = torch.cat((cls_x.unsqueeze(1), prompt, x), 1)
-            
+            # prompt_x = self.propagate(xyz1=center1, xyz2=center2, points1=prompt_x, points2=vis_x, de_neighbors=center2.shape[1], pro_cof=pro_cof)
+            # x = torch.cat((cls_x.unsqueeze(1), prompt_x), 1)
             x = self.adapter1(x)  
     
             x = torch.cat((x[:,0].unsqueeze(1), x[:, self.num_tokens+1:]), 1)
@@ -404,7 +407,8 @@ class TransformerEncoder(nn.Module):
     def forward(self, x, pos,mask=None, center=None, center2=None, neighborhood=None, idx=None, center_idx=None, num_group=None, group_size=None, cache_prompt=None, if_maxmean=None, pro_cof=None, center_cof=None, ad_cof=None, center_layer = None, center2_layer=None ,neighborhood_layer=None, idx_layer=None,center_idx_layer=None):
         for layer_id, block in enumerate(self.blocks):
             if layer_id<=5:
-                x,attn_weight = block(x + pos,mask, center,center2, neighborhood, idx, center_idx, num_group, group_size, cache_prompt=cache_prompt, if_maxmean=if_maxmean, pro_cof=pro_cof, center_cof=center_cof,ad_cof=ad_cof,  attn1=self.attn1, norm3=self.norm3, layer_id=layer_id)
+                x,attn_weight = block(x + pos,mask, center, center2, neighborhood, idx, center_idx, num_group, group_size, cache_prompt=cache_prompt, if_maxmean=if_maxmean, pro_cof=pro_cof, center_cof=center_cof,ad_cof=ad_cof,  attn1=self.attn1, norm3=self.norm3, layer_id=layer_id)
+                # x,attn_weight = block(x + pos,mask, center_layer, center2_layer, neighborhood, idx_layer, center_idx_layer, num_group, group_size, cache_prompt=cache_prompt, if_maxmean=if_maxmean, pro_cof=pro_cof, center_cof=center_cof,ad_cof=ad_cof,  attn1=self.attn1, norm3=self.norm3, layer_id=layer_id)
             else:
                 #x = block(x + pos,mask, center,center2, neighborhood, idx, center_idx, num_group, group_size, cache_prompt=cache_prompt, if_maxmean=if_maxmean, pro_cof=pro_cof, center_cof=center_cof,ad_cof=ad_cof,  attn1=self.attn1, norm3=self.norm3, layer_id=layer_id)
                 x,attn_weight = block(x + pos,mask, center_layer, center2_layer, neighborhood_layer, idx_layer, center_idx_layer, num_group, group_size, cache_prompt=cache_prompt, if_maxmean=if_maxmean, pro_cof=pro_cof, center_cof=center_cof,ad_cof=ad_cof,  attn1=self.attn1, norm3=self.norm3, layer_id=layer_id)
@@ -713,6 +717,12 @@ class PointTransformer_best(nn.Module):
         prompt_cor = self.prompt_cor.repeat(pts.shape[0], 1, 1)
         prompt_pts = torch.cat((prompt_cor, pts), dim=1)
         neighborhood_prompt, center_prompt, idx_prompt, center_idx_prompt = self.group_divider(prompt_pts)
+        #######
+        # _, center_prompt, _, _ = self.group_divider(pts)
+        # prompt_cor = self.prompt_cor.repeat(center_prompt.shape[0], 1, 1)
+        # center_prompt = torch.cat((prompt_cor, center_prompt),dim=1)   #whether include the 
+        #######
+
         #neighborhood_prompt, center_prompt, idx_prompt, center_idx_prompt = neighborhood, center, idx, center_idx
         ####
         cls_tokens = self.cls_token.expand(group_input_tokens.size(0), -1, -1)
@@ -740,7 +750,7 @@ class PointTransformer_best(nn.Module):
 
         cp_feat=cp_feat#[0]
         if cp_feat != None:
-                K = prompt_cor.shape[1] - 2 # kre
+                K = self.prompt_cor.shape[0] - 2 # kre
                 cp_feat_norm = cp_feat / cp_feat.norm(dim=-1, keepdim=True) #[B, 384]
                 new_knowledge = cp_feat_norm @ self.train_images_features_agg#.transpose(0,1) #[B, 11392]
                 new_knowledge_k, idx_k = torch.topk(new_knowledge, K) #[B, 2*K]
@@ -766,242 +776,6 @@ class PointTransformer_best(nn.Module):
             return concat_f
         ret = self.cls_head_finetune(concat_f)
         return ret
-
-
-class Group(nn.Module):  # FPS + KNN
-    def __init__(self, num_group, group_size):
-        super().__init__()
-        self.num_group = num_group
-        self.group_size = group_size
-        self.knn = KNN(k=self.group_size, transpose_mode=True)
-
-    def forward(self, xyz):
-        '''
-            input: B N 3
-            ---------------------------
-            output: B G M 3
-            center : B G 3
-        '''
-        batch_size, num_points, _ = xyz.shape
-        # fps the centers out
-        center,center_idx = misc.fps(xyz, self.num_group) # B G 3
-        # knn to get the neighborhood
-        _, idx = self.knn(xyz, center) # B G M
-        assert idx.size(1) == self.num_group
-        assert idx.size(2) == self.group_size
-        idx_base = torch.arange(0, batch_size, device=xyz.device).view(-1, 1, 1) * num_points
-        idx = idx + idx_base
-        idx = idx.view(-1)
-
-        center_idx_base = torch.arange(0, batch_size, device=xyz.device).view(-1, 1) * num_points
-        center_idx = center_idx + center_idx_base
-        center_idx = center_idx.view(-1)
-
-        neighborhood = xyz.view(batch_size * num_points, -1)[idx, :]
-        neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, 3).contiguous()
-        # normalize
-        neighborhood = neighborhood - center.unsqueeze(2)
-        return neighborhood, center, idx, center_idx
-
-
-
-class PositionalEmbedding(nn.Module):
-    def __init__(self, N_freqs, logscale=True):
-        """
-        Defines a function that embeds x to (x, sin(2^k x), cos(2^k x), ...)
-        in_channels: number of input channels (3 for both xyz and direction)
-        """
-        super().__init__()
-        self.N_freqs = N_freqs
-        self.funcs = [torch.sin, torch.cos]
-
-        if logscale:
-            self.freq_bands = 2**torch.linspace(0, N_freqs-1, N_freqs)#[2^0,2^1,...,2^(n-1)]
-        else:
-            self.freq_bands = torch.linspace(1, 2**(N_freqs-1), N_freqs)
-
-    def forward(self, x):
-        """
-        Embeds x to (x, sin(2^k x), cos(2^k x), ...) 
-        Different from the paper, "x" is also in the output
-        See https://github.com/bmild/nerf/issues/12
-        Inputs:
-            x: (B, f)
-
-        Outputs:
-            out: (B, 2*f*N_freqs+f)
-        """
-        out = [x]
-        for freq in self.freq_bands:#[2^0,2^1,...,2^(n-1)]
-            for func in self.funcs:
-                out += [func(freq*x)]
-        #!!!!相当于63维，多了三个基础坐标——>[x,y,z,sin(2^0Πpi),cos.......]
-        #xyz——>63,dir——>27
-        return torch.cat(out, -1)#变成一个63的元素
-
-class PointNet(nn.Module):   ## Embedding module
-    def __init__(self, encoder_channel):
-        super().__init__()
-        self.encoder_channel = encoder_channel
-        self.first_conv = nn.Sequential(
-            nn.Conv1d(3, 128, 1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(128, 256, 1)
-        )
-        self.second_conv = nn.Sequential(
-            nn.Conv1d(512, 512, 1),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(512, self.encoder_channel, 1)
-        )
-
-    def forward(self, point_groups):
-        '''
-            point_groups : B G N 3
-            -----------------
-            feature_global : B G C
-        '''
-        bs, g, n , _ = point_groups.shape
-        point_groups = point_groups.reshape(bs * g, n, 3)
-        # encoder
-        feature = self.first_conv(point_groups.transpose(2,1))  # BG 256 n
-        feature_global = torch.max(feature,dim=2,keepdim=True)[0]  # BG 256 1
-        feature = torch.cat([feature_global.expand(-1,-1,n), feature], dim=1)# BG 512 n
-        feature = self.second_conv(feature) # BG 1024 n
-        feature_global = torch.max(feature, dim=2, keepdim=False)[0] # BG 1024
-        return feature_global.reshape(bs, g, self.encoder_channel)
-
-class ShiftNet(nn.Module):
-    def __init__(self, in_channels, out_channels, hidden_dimesion=256, perturbation=0.1, embedding_level=4, num_group = 32, group_size = 32):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.hidden_dimesion = hidden_dimesion
-        self.num_group = num_group
-        self.group_size = group_size
-        self.group_divider = Group(num_group, group_size)
-        self.position_embedding = PositionalEmbedding(embedding_level)
-        self.first_conv = nn.Sequential(
-            nn.Conv1d(self.in_channels, self.hidden_dimesion//2, 1),
-            nn.BatchNorm1d(self.hidden_dimesion//2),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(self.hidden_dimesion//2, self.hidden_dimesion, 1)
-        )
-        self.second_conv = nn.Sequential(
-            nn.Conv1d(self.hidden_dimesion*2, self.hidden_dimesion*2, 1),
-            nn.BatchNorm1d(self.hidden_dimesion*2),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(self.hidden_dimesion*2, self.hidden_dimesion//2, 1)
-        )
-        self.mlp_position = nn.Sequential(
-            nn.Linear(in_channels*(2*embedding_level+1), self.hidden_dimesion//2),
-            nn.ReLU()
-        )
-        self.mlp = nn.Sequential(
-            nn.Linear(self.hidden_dimesion, self.hidden_dimesion),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dimesion, self.out_channels),
-        )
-        self.perturbation = perturbation
-        for layer in self.mlp:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                nn.init.constant_(layer.bias, val=0.0)
-    
-    def forward(self, x, require_global_feature=False):
-        B, N, _ = x.shape  #[32, 1024, 3]
-        dtype = x.dtype
-        neighborhood, center, idx, center_idx = self.group_divider(x.float()) #[B, G, n, 3]
-        neighborhood = neighborhood.to(dtype)
-        neighborhood = neighborhood.reshape(B*self.num_group, self.group_size, 3)
-        feature_local = self.first_conv(neighborhood.transpose(2,1))  # BG 256 n
-        feature_global = torch.max(feature_local,dim=2,keepdim=True)[0]  # BG 256 1
-        feature_local = torch.cat([feature_global.expand(-1,-1,self.group_size), feature_local], dim=1)# BG 512 n
-        feature_local = self.second_conv(feature_local) # BG 64 n
-        feature_global = torch.max(feature_local, dim=2, keepdim=False)[0] # BG 1024
-        feature_global = feature_global.reshape(B, self.num_group, -1)
-        feature_global = torch.mean(feature_global, 1, keepdim=True)
-        feature = self.mlp_position(self.position_embedding(x))
-        feature = torch.cat([feature, feature_global.repeat(1,N,1)], -1)
-        y = self.mlp(feature) * self.perturbation * x
-        y = y + x
-        if require_global_feature:
-            return y, feature_global
-        else:
-            return y
-
-# class ShiftNet(nn.Module):  #version 7.12
-#     def __init__(self, in_channels, out_channels, hidden_dimesion=128, perturbation=0.1, embedding_level=4, num_group = 32, group_size = 32):
-#         super().__init__()
-#         self.in_channels = in_channels
-#         self.out_channels = out_channels
-#         self.num_group = num_group
-#         self.group_size = group_size
-#         self.group_divider = Group(num_group, group_size)
-#         self.position_embedding = PositionalEmbedding(embedding_level)
-#         self.conv1 = nn.Conv1d(in_channels*(2*embedding_level+1), hidden_dimesion//2, 2)
-#         self.mlp_position = nn.Sequential(
-#             nn.Linear(in_channels*(2*embedding_level+1), hidden_dimesion//2),
-#             nn.ReLU()
-#         )
-#         self.mlp = nn.Sequential(
-#             nn.Linear(hidden_dimesion, hidden_dimesion),
-#             nn.ReLU(),
-#             nn.Linear(hidden_dimesion, out_channels),
-#         )
-#         self.perturbation = perturbation
-#         for layer in self.mlp:
-#             if isinstance(layer, nn.Linear):
-#                 nn.init.xavier_uniform_(layer.weight)
-#                 nn.init.constant_(layer.bias, val=0.0)
-    
-#     def forward(self, x):
-#         B, N, _ = x.shape  #[32, 1024, 3]
-#         dtype = x.dtype
-#         neighborhood, center, idx, center_idx = self.group_divider(x.float()) #[B, G, n, 3]
-#         neighborhood = neighborhood.to(dtype)
-#         center = center.to(dtype)
-#         embedding = self.position_embedding(neighborhood)  #[B, G, n, 27]
-#         feature1 = self.mlp_position(self.position_embedding(x))
-#         feature2 = torch.max(self.conv1(embedding.transpose(2,3).reshape([B*self.num_group, -1, self.group_size])),dim=2,keepdim=False)[0]
-#         feature2 = feature2.reshape([B, self.num_group, -1]).repeat(1,N//self.num_group,1)
-#         feature = torch.cat([feature1, feature2], -1)
-#         y = self.mlp(feature)*self.perturbation
-#         y = y + x
-#         return y
-
-class PointPrompt(nn.Module):
-    def __init__(self, point_number=128, init_type='uniform', scale=0.05, factor=8):   #peak learning rate 0.0005
-        super().__init__()
-        self.point_number = point_number
-        self.points = nn.Parameter(torch.zeros([1, point_number, 3], dtype=torch.float32), requires_grad=True)
-        self.scale = scale
-        self.factor = factor
-        if init_type == 'uniform':
-            nn.init.uniform_(self.points, -self.scale, self.scale)
-        elif init_type == 'cluster':
-            means = [
-                [-self.scale, 0, 0],
-                [self.scale, 0, 0],
-                [0, -self.scale, 0],
-                [0, self.scale, 0]
-            ]
-            cov = np.eye(3) * 0.04
-            num_points_per_cluster = point_number//len(means)
-            points = []
-            for mean in means:
-                cluster_points = np.random.multivariate_normal(mean, cov, num_points_per_cluster)
-                points.append(cluster_points)
-            
-            with torch.no_grad():
-                self.points.copy_(torch.tensor(np.vstack(points).reshape([1, point_number, 3])))
-    
-    def forward(self, x):
-        learnable_points = self.points.repeat(x.shape[0], 1, 1) * self.factor
-        x = torch.cat([x, learnable_points], dim=1)
-        return x
-
 
 # finetune model
 @MODELS.register_module()

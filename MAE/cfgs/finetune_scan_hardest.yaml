@@ -21,7 +21,7 @@ dataset : {
             others: {subset: 'test'}}}
 
 model : {
-  NAME: PointTransformer_best, # PointTransformer_best PointTransformer PointTransformer_prompt PointTransformer_module PointTransformer_pointtokenpromt
+  NAME: PointTransformer_pointtokenprompt, # PointTransformer_best PointTransformer PointTransformer_prompt PointTransformer_module PointTransformer_pointtokenpromt
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
@@ -35,6 +35,14 @@ model : {
     adapter_dim: 16,
     adapter_drop_path_rate: 0.1,
   },
+  point_number: 20,
+  scale: 0.05,
+  factor: 8,
+  perturbation: 0.1,
+  point_prompt: True,
+  shift_net: True,
+  prompt_depth: 6,
+  scaler: True
 }
 
 npoints: 2048

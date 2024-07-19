@@ -92,7 +92,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         # if 'point_prompt' in name or 'shift_net' in name or 'attn_free_linear' in name or "cp" in name or "adapter1" in name or "norm3" in name or "attn1." in name or  "out_transform" in name or ".adapter." in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'prompt_cor' in name or 'cache_gate' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "norm." in name or ".gate" in name or "ad_gate" in name or "prompt_embeddings" in name: 
         #     print_log(name, logger = logger)
         #     param.requires_grad_(True)
-        if 'point_prompt' in name or 'shift_net' in name or 'adapter' in name  or 'scaler' in name or 'shape_feature_mlp' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "prompt_embeddings" in name or 'prompt_cor' in name    or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name: 
+        if 'point_prompt' in name or 'shift_net' in name or 'adapter' in name  or 'scaler' in name or 'shape_feature_mlp' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "prompt_embeddings" in name or 'prompt_cor' in name  or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name: 
             print_log(name, logger = logger)
             param.requires_grad_(True)
         else:

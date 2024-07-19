@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from knn_cuda import KNN
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
-from .Point_Mask_Rev_FT_scan_cp import ShiftNet, PointPrompt
+from .PointPrompt import ShiftNet, PointPrompt
 
 class PointNetFeaturePropagation(nn.Module):
     def __init__(self):
@@ -167,8 +167,10 @@ class Attention(nn.Module):
 
 class Block(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, num_tokens=10):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, num_tokens=10, config=None):
         super().__init__()
+        if config is not None:
+            self.config = config
         self.norm1 = norm_layer(dim)
 
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
@@ -183,13 +185,17 @@ class Block(nn.Module):
         self.num_tokens = num_tokens
         self.prompt_embeddings = nn.Parameter(torch.zeros(self.num_tokens, dim))
         self.adapter=None
-        # self.scaler = nn.Parameter(torch.ones([1])*0.3)
+        self.scaler1 = nn.Parameter(torch.ones([1])*0.3)
+        self.scaler2 = nn.Parameter(torch.ones([1])*0.3)
         self.adapter = Adapter(embed_dims=dim, reduction_dims=16)
 
     def forward(self, x, global_feature=None, token_position=None):
         if global_feature is not None:
             token_prompt = self.prompt_dropout(self.prompt_embeddings.repeat(x.shape[0], 1, 1))
-            token_prompt = token_prompt + global_feature.repeat([1, self.num_tokens, 1])+token_position.repeat(x.shape[0], 1, 1)
+            if self.config.scaler == True:
+                token_prompt = token_prompt + self.scaler1*global_feature.repeat([1, self.num_tokens, 1])+token_position.repeat(x.shape[0], 1, 1)
+            else:
+                token_prompt = token_prompt + 0.3*global_feature.repeat([1, self.num_tokens, 1])+token_position.repeat(x.shape[0], 1, 1)
             x = torch.cat((x[:,0:1], token_prompt, x[:,1:]), 1)
         elif token_position is not None:
             token_prompt = self.prompt_dropout(self.prompt_embeddings.repeat(x.shape[0], 1, 1))
@@ -198,27 +204,35 @@ class Block(nn.Module):
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         if self.adapter is not None:
-            x = x + self.adapter(x)*0.5
+            if global_feature is not None:
+                if self.config.scaler == True:
+                    x = x + self.adapter(x+global_feature*self.scaler2)*0.5
+                else:
+                    x = x + self.adapter(x+global_feature*0.3)*0.5
+            else:
+                x = x + self.adapter(x)*0.5
         if global_feature is not None or token_position is not None:
             x = torch.concat([x[:,0:1,:], x[:,self.num_tokens+1:,:]], dim=1)
         return x
 
 class TransformerEncoder(nn.Module):
     def __init__(self, embed_dim=768, depth=4, num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.):
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., config=None):
         super().__init__()
-        
+        if config is not None:
+            self.config = config
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, 
-                drop_path = drop_path_rate[i] if isinstance(drop_path_rate, list) else drop_path_rate
+                drop_path = drop_path_rate[i] if isinstance(drop_path_rate, list) else drop_path_rate,
+                config=config
                 )
             for i in range(depth)])
 
     def forward(self, x, pos, global_feature=None, token_position=None):
         for idx, block in enumerate(self.blocks):
-            if idx < 6 and token_position is not None:
+            if idx < self.config.prompt_depth and token_position is not None:
                 x = block(x + pos, global_feature=global_feature, token_position=token_position)
             else:
                 x = block(x + pos)
@@ -288,6 +302,7 @@ class MaskTransformer(nn.Module):
             depth = self.depth,
             drop_path_rate = dpr,
             num_heads = self.num_heads,
+            config = self.config
         )
 
         self.norm = nn.LayerNorm(self.trans_dim)
@@ -497,6 +512,7 @@ class PointTransformer_module(nn.Module):
             depth=self.depth,
             drop_path_rate=dpr,
             num_heads=self.num_heads,
+            config=self.config
         )
 
         self.norm = nn.LayerNorm(self.trans_dim)
@@ -634,13 +650,14 @@ class PointTransformer_pointtokenprompt(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, self.depth)]
         #position for prompt token    
         self.prompt_cor = nn.Parameter(torch.zeros(10, 3))
-        trunc_normal_(self.prompt_cor, std=.02)
+        trunc_normal_(self.prompt_cor, std=.06)
         
         self.blocks = TransformerEncoder(
             embed_dim=self.trans_dim,
             depth=self.depth,
             drop_path_rate=dpr,
             num_heads=self.num_heads,
+            config=self.config
         )
 
         self.norm = nn.LayerNorm(self.trans_dim)
@@ -660,12 +677,14 @@ class PointTransformer_pointtokenprompt(nn.Module):
                 nn.Linear(256, self.cls_dim)
             )
         self.point_prompt = None
-        # self.point_prompt = PointPrompt(point_number=128, init_type='uniform')
+        if config.point_prompt == True:
+            self.point_prompt = PointPrompt(point_number=config.point_number, init_type='uniform', scale=config.scale, factor=config.factor)
         self.shift_net = None
-        # self.shift_net = ShiftNet(3,3,hidden_dimesion=256,perturbation=0.1,embedding_level=4,num_group=32,group_size=64)
+        if config.shift_net == True:
+            self.shift_net = ShiftNet(3,3, hidden_dimesion=config.encoder_dims, perturbation=config.perturbation, num_group=config.num_group, group_size=config.group_size)
         if self.shift_net is not None:
             self.shape_feature_mlp = nn.Sequential(
-                nn.Linear(self.shift_net.hidden_dimesion//2, self.shift_net.hidden_dimesion),
+                nn.Linear(self.shift_net.hidden_dimesion, self.shift_net.hidden_dimesion),
                 nn.GELU(),
                 nn.Linear(self.shift_net.hidden_dimesion, self.encoder_dims)
             )
