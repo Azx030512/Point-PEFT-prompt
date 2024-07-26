@@ -1,7 +1,7 @@
 optimizer : {
   type: AdamW,
   kwargs: {
-  lr : 0.0005,
+  lr : 0.0016,
   weight_decay : 0.05
 }}
 
@@ -21,7 +21,7 @@ dataset : {
             others: {subset: 'test'}}}
 
 model : {
-  NAME: PointTransformer_pointtokenprompt, # PointTransformer_best PointTransformer PointTransformer_prompt PointTransformer_module PointTransformer_pointtokenpromt
+  NAME: PointTransformer_pointtokenprompt, # PointTransformer_best PointTransformer PointTransformer_prompt PointTransformer_module PointTransformer_pointtokenprompt
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
@@ -36,13 +36,14 @@ model : {
     adapter_drop_path_rate: 0.1,
   },
   point_number: 20,
-  scale: 0.05,
-  factor: 8,
-  perturbation: 0.1,
+  scale: 0.01,
+  factor: 5,
+  perturbation: 0.20,
   point_prompt: True,
   shift_net: True,
-  prompt_depth: 6,
-  scaler: True
+  prompt_depth: 8,
+  scaler: False,
+  num_tokens: 10,
 }
 
 npoints: 2048

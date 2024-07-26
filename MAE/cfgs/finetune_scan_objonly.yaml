@@ -20,15 +20,29 @@ dataset : {
   test : { _base_: cfgs/dataset_configs/ScanObjectNN_objectonly.yaml,
             others: {subset: 'test'}}}
 model : {
-  NAME: PointTransformer,
+  NAME: PointTransformer_pointtokenprompt,
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
+  if_half: False,
   cls_dim: 15,
   num_heads: 6,
   group_size: 32,
   num_group: 128,
   encoder_dims: 384,
+  adapter_config: {
+    adapter_dim: 16,
+    adapter_drop_path_rate: 0.1,
+  },
+  point_number: 20,
+  scale: 0.01,
+  factor: 5,
+  perturbation: 0.20,
+  point_prompt: True,
+  shift_net: True,
+  prompt_depth: 8,
+  scaler: False,
+  num_tokens: 10,
 }
 
 

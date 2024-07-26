@@ -189,26 +189,26 @@ class Block(nn.Module):
         self.scaler2 = nn.Parameter(torch.ones([1])*0.3)
         self.adapter = Adapter(embed_dims=dim, reduction_dims=16)
 
-    def forward(self, x, global_feature=None, token_position=None):
-        if global_feature is not None:
+    def forward(self, x, global_feature=None, token_position=None, layer_id=None):
+        if global_feature is not None and layer_id<self.config.prompt_depth:
             token_prompt = self.prompt_dropout(self.prompt_embeddings.repeat(x.shape[0], 1, 1))
             if self.config.scaler == True:
                 token_prompt = token_prompt + self.scaler1*global_feature.repeat([1, self.num_tokens, 1])+token_position.repeat(x.shape[0], 1, 1)
             else:
-                token_prompt = token_prompt + 0.3*global_feature.repeat([1, self.num_tokens, 1])+token_position.repeat(x.shape[0], 1, 1)
+                token_prompt = token_prompt + 0.5*global_feature.repeat([1, self.num_tokens, 1])+token_position.repeat(x.shape[0], 1, 1)
             x = torch.cat((x[:,0:1], token_prompt, x[:,1:]), 1)
-        elif token_position is not None:
+        elif token_position is not None and layer_id<self.config.prompt_depth:
             token_prompt = self.prompt_dropout(self.prompt_embeddings.repeat(x.shape[0], 1, 1))
             token_prompt = token_prompt + token_position.repeat(x.shape[0], 1, 1)
             x = torch.cat((x[:,0:1], token_prompt, x[:,1:]), 1)
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         if self.adapter is not None:
-            if global_feature is not None:
+            if global_feature is not None and layer_id<6:
                 if self.config.scaler == True:
                     x = x + self.adapter(x+global_feature*self.scaler2)*0.5
                 else:
-                    x = x + self.adapter(x+global_feature*0.3)*0.5
+                    x = x + self.adapter(x+global_feature*0.5)*0.5
             else:
                 x = x + self.adapter(x)*0.5
         if global_feature is not None or token_position is not None:
@@ -226,6 +226,7 @@ class TransformerEncoder(nn.Module):
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, 
                 drop_path = drop_path_rate[i] if isinstance(drop_path_rate, list) else drop_path_rate,
+                num_tokens=config.num_tokens,
                 config=config
                 )
             for i in range(depth)])
@@ -233,9 +234,9 @@ class TransformerEncoder(nn.Module):
     def forward(self, x, pos, global_feature=None, token_position=None):
         for idx, block in enumerate(self.blocks):
             if idx < self.config.prompt_depth and token_position is not None:
-                x = block(x + pos, global_feature=global_feature, token_position=token_position)
+                x = block(x + pos, global_feature=global_feature, token_position=token_position, layer_id=idx)
             else:
-                x = block(x + pos)
+                x = block(x + pos, layer_id=idx)
         return x
 
 
@@ -541,7 +542,7 @@ class PointTransformer_module(nn.Module):
         trunc_normal_(self.cls_pos, std=.02)
 
     def build_loss_func(self):
-        self.loss_ce = nn.CrossEntropyLoss()
+        self.loss_ce = nn.CrossEntropyLoss() # label_smoothing=0.3
 
     def get_loss_acc(self, ret, gt):
         loss = self.loss_ce(ret, gt.long())
@@ -676,6 +677,9 @@ class PointTransformer_pointtokenprompt(nn.Module):
                 nn.Dropout(0.5),
                 nn.Linear(256, self.cls_dim)
             )
+        for layer in self.cls_head_finetune:
+                if isinstance(layer, nn.Linear):
+                    nn.init.kaiming_uniform_(layer.weight, a=5.0**0.5)
         self.point_prompt = None
         if config.point_prompt == True:
             self.point_prompt = PointPrompt(point_number=config.point_number, init_type='uniform', scale=config.scale, factor=config.factor)
@@ -684,17 +688,21 @@ class PointTransformer_pointtokenprompt(nn.Module):
             self.shift_net = ShiftNet(3,3, hidden_dimesion=config.encoder_dims, perturbation=config.perturbation, num_group=config.num_group, group_size=config.group_size)
         if self.shift_net is not None:
             self.shape_feature_mlp = nn.Sequential(
-                nn.Linear(self.shift_net.hidden_dimesion, self.shift_net.hidden_dimesion),
+                nn.Linear(self.shift_net.num_group//2*self.shift_net.top_center_dim, 16),
                 nn.GELU(),
-                nn.Linear(self.shift_net.hidden_dimesion, self.encoder_dims)
+                nn.Dropout(0.25),
+                nn.Linear(16, self.encoder_dims)
             )
+            for layer in self.shape_feature_mlp:
+                if isinstance(layer, nn.Linear):
+                    nn.init.kaiming_uniform_(layer.weight, a=5.0**0.5)
         self.build_loss_func()
 
         trunc_normal_(self.cls_token, std=.02)
         trunc_normal_(self.cls_pos, std=.02)
 
     def build_loss_func(self):
-        self.loss_ce = nn.CrossEntropyLoss()
+        self.loss_ce = nn.CrossEntropyLoss(label_smoothing=0) #0.2
 
     def get_loss_acc(self, ret, gt):
         loss = self.loss_ce(ret, gt.long())
@@ -753,6 +761,7 @@ class PointTransformer_pointtokenprompt(nn.Module):
         if self.shift_net:
             pts, shape_feature = self.shift_net(pts, require_global_feature=True)
             shape_feature = self.shape_feature_mlp(shape_feature)
+            shape_feature = shape_feature[:,None,:]
         if self.point_prompt:
             pts = self.point_prompt(pts) # [batch_size, 1024+128, 3]
 

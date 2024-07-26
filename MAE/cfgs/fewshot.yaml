@@ -8,7 +8,7 @@ optimizer : {
 scheduler: {
   type: CosLR,
   kwargs: {
-    epochs: 150,
+    epochs: 300,
     initial_epochs : 10
 }}
 
@@ -21,19 +21,33 @@ dataset : {
   test : { _base_: cfgs/dataset_configs/ModelNet40.yaml,
             others: {subset: 'test'}}}
 model : {
-  NAME: PointTransformer,
+  NAME: PointTransformer_pointtokenprompt, # PointTransformer_best PointTransformer_pointtokenprompt
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
+  if_half: False,
   cls_dim: 40,
   num_heads: 6,
   group_size: 32,
-  num_group: 64,
+  num_group: 96,
   encoder_dims: 384,
+  adapter_config: {
+    adapter_dim: 16,
+    adapter_drop_path_rate: 0.1,
+  },
+  point_number: 30,
+  scale: 0.02,
+  factor: 5,
+  perturbation: 0.30,
+  point_prompt: True,
+  shift_net: True,
+  prompt_depth: 8,
+  scaler: False,
+  num_tokens: 10,
 }
 
 npoints: 1024
 total_bs : 32
 step_per_update : 1
-max_epoch : 150
+max_epoch : 300
 grad_norm_clip : 10

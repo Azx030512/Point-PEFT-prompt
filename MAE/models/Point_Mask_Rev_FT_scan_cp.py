@@ -339,7 +339,7 @@ class Block(nn.Module):
             x = x[:,1:]
             G = G-1+self.num_tokens
             prompt_x = torch.cat((prompt,x), dim=1)
-            ####
+            ###
             x_neighborhoods = prompt_x.reshape(B*G, -1)[idx, :].reshape(B*center2.shape[1], group_size, -1)
             x_centers = prompt_x.reshape(B*G, -1)[center_idx, :].reshape(B, center2.shape[1], -1)
             # x_neighborhoods = x.reshape(B*G, -1)[idx, :].reshape(B*center2.shape[1], group_size, -1)
@@ -648,7 +648,7 @@ class PointTransformer_best(nn.Module):
         trunc_normal_(self.cls_pos, std=.02)
 
     def build_loss_func(self):
-        self.loss_ce = nn.CrossEntropyLoss()
+        self.loss_ce = nn.CrossEntropyLoss() # label_smoothing=0.3
 
     def get_loss_acc(self, ret, gt):
         loss = self.loss_ce(ret, gt.long())

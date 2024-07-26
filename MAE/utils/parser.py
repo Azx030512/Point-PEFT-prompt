@@ -7,7 +7,7 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
-        default= './cfgs/finetune_scan_hardest.yaml',
+        default= './cfgs/finetune_scan_objonly.yaml',  # ./cfgs/fewshot.yaml  ./cfgs/finetune_scan_hardest.yaml cfgs/finetune_scan_objbg.yaml cfgs/finetune_scan_objonly.yaml
         help = 'yaml config file')
     parser.add_argument(
         '--cache_prompt', 
@@ -34,10 +34,10 @@ def get_args():
         default=False, 
         help='whether to use sync bn')
     # some args
-    parser.add_argument('--exp_name', type = str, default='new-shiftnet&prompt-small-shift', help = 'experiment name') #only-pointtokenprompt-tuning
+    parser.add_argument('--exp_name', type = str, default='pointprompt-learningrate0.0005-depth8', help = 'experiment name') #only-pointtokenprompt-tuning
     parser.add_argument('--loss', type=str, default='cd1', help='loss name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
-    parser.add_argument('--ckpts', type = str, default='ckpts/pretrain.pth', help = 'test used ckpt path') #./ckpts/pretrain.pth
+    parser.add_argument('--ckpts', type = str, default='./ckpts/pretrain.pth', help = 'test used ckpt path') #./ckpts/pretrain.pth
     parser.add_argument('--val_freq', type = int, default=1, help = 'test freq')
     parser.add_argument(
         '--vote',
@@ -89,11 +89,11 @@ def get_args():
         help = 'in the forward for block')
     ###
     parser.add_argument(
-        '--way', type=int, default=-1)
+        '--way', type=int, default=5)
     parser.add_argument(
-        '--shot', type=int, default=-1)
+        '--shot', type=int, default=10)
     parser.add_argument(
-        '--fold', type=int, default=-1)
+        '--fold', type=int, default=5)
     
     args = parser.parse_args()
 

@@ -244,34 +244,36 @@ class PointNetFeaturePropagation(nn.Module):
         return new_points
     
 class ShiftNet(nn.Module):
-    def __init__(self, in_channels, out_channels, hidden_dimesion=384, perturbation=0.1, embedding_level=4, num_group = 128, group_size = 32):
+    def __init__(self, in_channels, out_channels, hidden_dimesion=384, perturbation=0.1, embedding_level=4, num_group = 128, group_size = 32, top_center_dim=8):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.hidden_dimesion = hidden_dimesion
         self.num_group = num_group
         self.group_size = group_size
+        self.top_center_dim = top_center_dim
         self.group_divider = Group(num_group, group_size)
         self.position_embedding = PositionalEmbedding(embedding_level)
         
-        self.abstraction_level1 = PointNetSetAbstraction(self.num_group, self.group_size, in_channels*(2*embedding_level+1), mlp=[64, 128, 256])
-        self.abstraction_level2 = PointNetSetAbstraction(self.num_group//2, self.group_size//2, 256, mlp=[256, 384, hidden_dimesion])
+        self.abstraction_level1 = PointNetSetAbstraction(self.num_group, self.group_size, in_channels*(2*embedding_level+1), mlp=[64, 32, 64])
+        self.abstraction_level2 = PointNetSetAbstraction(self.num_group//2, self.group_size//2, 64, mlp=[64, 32, self.top_center_dim])
         
-        self.propagation1 = PointNetFeaturePropagation(in_channel=in_channels*(2*embedding_level+1)+128, mlp=[128, 128])
-        self.propagation2 = PointNetFeaturePropagation(in_channel=256+hidden_dimesion, mlp=[256,128])
+        self.propagation1 = PointNetFeaturePropagation(in_channel=in_channels*(2*embedding_level+1)+32, mlp=[32, 32])
+        self.propagation2 = PointNetFeaturePropagation(in_channel=64+self.top_center_dim, mlp=[64,32])
 
         self.mlp_position = nn.Sequential(
-            nn.Linear(128, self.hidden_dimesion//2),
+            nn.Linear(32, 64),
             # nn.BatchNorm1d(self.hidden_dimesion//2),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(self.hidden_dimesion//2, self.out_channels),
+            nn.Dropout(0.2),
+            nn.Linear(64, self.out_channels),
         )
         
         self.perturbation = perturbation
         for layer in self.mlp_position:
             if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
+                # nn.init.xavier_uniform_(layer.weight)
+                nn.init.kaiming_uniform_(layer.weight, a=5.0**0.5)
                 nn.init.constant_(layer.bias, val=0.0)
     
     def forward(self, x, require_global_feature=False):
@@ -281,7 +283,8 @@ class ShiftNet(nn.Module):
         center2, center2_feature = self.abstraction_level2(center1, center1_feature)
         center1_feature = self.propagation2(center1, center2, center1_feature, center2_feature)
         feature = self.propagation1(x, center1, feature, center1_feature)
-        feature_global = torch.mean(center2_feature, dim=1)[0]
+        # feature_global = torch.mean(center2_feature, dim=1)[0]
+        feature_global = center2_feature.reshape(B, -1)
         y = self.mlp_position(feature) * self.perturbation * x
         y = y + x
         if require_global_feature:
@@ -390,7 +393,7 @@ class ShiftNet(nn.Module):
 #         return y
 
 class PointPrompt(nn.Module):
-    def __init__(self, point_number=20, init_type='uniform', scale=0.05, factor=8):   #peak learning rate 0.0005
+    def __init__(self, point_number=20, init_type='uniform', scale=0.01, factor=5):   #peak learning rate 0.0005
         super().__init__()
         self.point_number = point_number
         self.points = nn.Parameter(torch.zeros([1, point_number, 3], dtype=torch.float32), requires_grad=True)

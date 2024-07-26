@@ -26,8 +26,9 @@ test_transforms = transforms.Compose(
 
 train_transforms_scan = transforms.Compose(
     [
-        data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
-        data_transforms.PointcloudRotate(),
+        data_transforms.PointcloudScaleAndTranslate(),
+        # data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
+        # data_transforms.PointcloudRotate(),
     ]
 )
 
