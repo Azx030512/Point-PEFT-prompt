@@ -1,7 +1,7 @@
 optimizer : {
   type: AdamW,
   kwargs: {
-  lr : 0.0005,
+  lr : 0.0010,
   weight_decay : 0.05
 }}
 
@@ -29,19 +29,19 @@ model : {
   cls_dim: 40,
   num_heads: 6,
   group_size: 32,
-  num_group: 96,
+  num_group: 128,
   encoder_dims: 384,
   adapter_config: {
     adapter_dim: 16,
     adapter_drop_path_rate: 0.1,
   },
-  point_number: 30,
-  scale: 0.02,
+  point_number: 20,
+  scale: 0.01,
   factor: 5,
-  perturbation: 0.30,
+  perturbation: 0.20,
   point_prompt: True,
   shift_net: True,
-  prompt_depth: 8,
+  prompt_depth: 6,
   scaler: False,
   num_tokens: 10,
 }

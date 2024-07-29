@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from knn_cuda import KNN
 from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
-from .PointPrompt import ShiftNet, PointPrompt
+from .PointPrompt import ShiftNet, PointPrompt, Group, propagate, pooling
 
 class PointNetFeaturePropagation(nn.Module):
     def __init__(self):
@@ -85,36 +85,6 @@ class Encoder(nn.Module):   ## Embedding module
         return feature_global.reshape(bs, g, self.encoder_channel) # [B, G, 384]
 
 
-class Group(nn.Module):  # FPS + KNN
-    def __init__(self, num_group, group_size):
-        super().__init__()
-        self.num_group = num_group
-        self.group_size = group_size
-        self.knn = KNN(k=self.group_size, transpose_mode=True)
-
-    def forward(self, xyz):
-        '''
-            input: B N 3
-            ---------------------------
-            output: B G M 3
-            center : B G 3
-        '''
-        batch_size, num_points, _ = xyz.shape
-        # fps the centers out
-        center,_ = misc.fps(xyz, self.num_group) # B G 3
-        # knn to get the neighborhood
-        _, idx = self.knn(xyz, center) # B G M
-        assert idx.size(1) == self.num_group
-        assert idx.size(2) == self.group_size
-        idx_base = torch.arange(0, batch_size, device=xyz.device).view(-1, 1, 1) * num_points
-        idx = idx + idx_base
-        idx = idx.view(-1)
-        neighborhood = xyz.view(batch_size * num_points, -1)[idx, :]
-        neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, 3).contiguous()
-        # normalize
-        neighborhood = neighborhood - center.unsqueeze(2)
-        return neighborhood, center
-
 
 ## Transformers
 class Mlp(nn.Module):
@@ -172,6 +142,7 @@ class Block(nn.Module):
         if config is not None:
             self.config = config
         self.norm1 = norm_layer(dim)
+        self.dim = dim
 
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -188,8 +159,12 @@ class Block(nn.Module):
         self.scaler1 = nn.Parameter(torch.ones([1])*0.3)
         self.scaler2 = nn.Parameter(torch.ones([1])*0.3)
         self.adapter = Adapter(embed_dims=dim, reduction_dims=16)
+        self.out_transform = nn.Sequential(
+                                nn.BatchNorm1d(dim),
+                                nn.GELU()
+                            )
 
-    def forward(self, x, global_feature=None, token_position=None, layer_id=None):
+    def forward(self, x, global_feature=None, token_position=None, layer_id=None, level1_center=None, level1_index=None, level2_center=None, level2_index=None):
         if global_feature is not None and layer_id<self.config.prompt_depth:
             token_prompt = self.prompt_dropout(self.prompt_embeddings.repeat(x.shape[0], 1, 1))
             if self.config.scaler == True:
@@ -203,16 +178,32 @@ class Block(nn.Module):
             x = torch.cat((x[:,0:1], token_prompt, x[:,1:]), 1)
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+        B,G,_ = x.shape
+        cls_x = x[:,0:1]
+        x = x[:,1:]
+        G = G-1 # +self.num_tokens
+    
+        x_neighborhoods = x.reshape(B*G, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
+        x_centers = x.reshape(B*G, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
+        x_neighborhoods = self.drop_path(x_neighborhoods)+x_neighborhoods
+        # x_neighborhoods = self.drop_path(attn1(norm3(x_neighborhoods)))+x_neighborhoods
+        vis_x = pooling(x_neighborhoods.reshape(B, level2_center.shape[1], -1, self.dim), transform=self.out_transform)+0.3*x_centers
+        propagate_range = level1_center.shape[1]
+        x[:,-propagate_range:] = propagate(xyz1=level1_center, xyz2=level2_center, points1=x[:,-propagate_range:], points2=vis_x)
+
         if self.adapter is not None:
             if global_feature is not None and layer_id<6:
                 if self.config.scaler == True:
-                    x = x + self.adapter(x+global_feature*self.scaler2)*0.5
+                    x = x + self.adapter(x+global_feature*self.scaler2)
                 else:
-                    x = x + self.adapter(x+global_feature*0.5)*0.5
+                    x = x + self.adapter(x+global_feature*0.5)
             else:
-                x = x + self.adapter(x)*0.5
-        if global_feature is not None or token_position is not None:
-            x = torch.concat([x[:,0:1,:], x[:,self.num_tokens+1:,:]], dim=1)
+                x = x + self.adapter(x)
+        if layer_id<self.config.prompt_depth:
+            x = torch.concat([cls_x, x[:,self.num_tokens:,:]], dim=1)
+        else:
+            x = torch.concat([cls_x, x], dim=1)
         return x
 
 class TransformerEncoder(nn.Module):
@@ -231,12 +222,12 @@ class TransformerEncoder(nn.Module):
                 )
             for i in range(depth)])
 
-    def forward(self, x, pos, global_feature=None, token_position=None):
+    def forward(self, x, pos, global_feature=None, token_position=None, level1_center=None, level1_index=None, level2_center=None, level2_index=None):
         for idx, block in enumerate(self.blocks):
             if idx < self.config.prompt_depth and token_position is not None:
-                x = block(x + pos, global_feature=global_feature, token_position=token_position, layer_id=idx)
+                x = block(x + pos, global_feature=global_feature, token_position=token_position, layer_id=idx, level1_center=level1_center, level1_index=level1_index, level2_center=level2_center, level2_index=level2_index)
             else:
-                x = block(x + pos, layer_id=idx)
+                x = block(x + pos, layer_id=idx, level1_center=level1_center, level1_index=level1_index, level2_center=level2_center, level2_index=level2_index)
         return x
 
 
@@ -417,11 +408,12 @@ class Adapter(nn.Module):
     
         self.embed_dims = embed_dims
         self.super_reductuion_dim = reduction_dims
-
+        
         self.dropout = nn.Dropout(p=drop_rate_adapter)
-        self.identity = False
 
         if self.super_reductuion_dim > 0:
+            self.layer_norm = nn.LayerNorm(self.embed_dims)
+            self.scale = nn.Linear(self.embed_dims, 1)
             self.ln1 = nn.Linear(self.embed_dims, self.super_reductuion_dim)
             self.activate = QuickGELU()
             self.ln2 = nn.Linear(self.super_reductuion_dim, self.embed_dims)
@@ -431,7 +423,7 @@ class Adapter(nn.Module):
     def init_weights(self):
         def _init_weights(m):
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                nn.init.kaiming_uniform_(m.weight, a=5**0.5)
                 nn.init.normal_(m.bias, std=1e-6)
 
 
@@ -439,36 +431,29 @@ class Adapter(nn.Module):
 
 
     def set_sample_config(self, sample_embed_dim):
-        self.identity = False
         self.sample_embed_dim = sample_embed_dim
-        if self.sample_embed_dim == 0:
-            self.identity = True
-        else:
-            self.sampled_weight_0 = self.ln1.weight[:self.sample_embed_dim,:]
-            self.sampled_bias_0 =  self.ln1.bias[:self.sample_embed_dim]
+        
+        self.sampled_weight_0 = self.ln1.weight[:self.sample_embed_dim,:]
+        self.sampled_bias_0 =  self.ln1.bias[:self.sample_embed_dim]
 
-            self.sampled_weight_1 = self.ln2.weight[:, :self.sample_embed_dim]
-            self.sampled_bias_1 =  self.ln2.bias
+        self.sampled_weight_1 = self.ln2.weight[:, :self.sample_embed_dim]
+        self.sampled_bias_1 =  self.ln2.bias
 
 
-    def forward(self, x, identity=None):
-        if self.identity:
-            return x
-
+    def forward(self, x):
+        x = self.layer_norm(x)
+        # scale = F.relu(self.scale(x))
+        scale = 0.7
         out = self.ln1(x)
         out = self.activate(out)
         out = self.dropout(out)
         out = self.ln2(out)
 
-        if identity is None:
-            identity = x
-        return out
+        return out*scale
 
     def calc_sampled_param_num(self):
-        if self.identity:
-            return 0
-        else:
-            return  self.sampled_weight_0.numel() + self.sampled_bias_0.numel() + self.sampled_weight_1.numel() + self.sampled_bias_1.numel()
+    
+        return  self.sampled_weight_0.numel() + self.sampled_bias_0.numel() + self.sampled_weight_1.numel() + self.sampled_bias_1.numel()
 
     def get_complexity(self, sequence_length):
         total_flops = 0
@@ -637,6 +622,7 @@ class PointTransformer_pointtokenprompt(nn.Module):
         self.encoder_dims = config.encoder_dims
 
         self.group_divider = Group(num_group=self.num_group, group_size=self.group_size)
+        self.level2_group_divider = Group(num_group=self.num_group//2, group_size=self.group_size//2)
 
         self.encoder = Encoder(encoder_channel=self.encoder_dims)
 
@@ -662,12 +648,8 @@ class PointTransformer_pointtokenprompt(nn.Module):
         )
 
         self.norm = nn.LayerNorm(self.trans_dim)
-        self.propagation_0 = None
-        # self.propagation_0 = PointNetFeaturePropagation()
-        self.train_images_features_agg = None
-        # self.train_images_features_agg = torch.load("./ckpts/train_f_pos_shape_scan.pt")
         self.cls_head_finetune = nn.Sequential(
-                nn.Linear(self.trans_dim * 2, 256),
+                nn.Linear(self.trans_dim * 3, 256),
                 nn.BatchNorm1d(256),
                 nn.ReLU(inplace=True),
                 nn.Dropout(0.5),
@@ -702,7 +684,11 @@ class PointTransformer_pointtokenprompt(nn.Module):
         trunc_normal_(self.cls_pos, std=.02)
 
     def build_loss_func(self):
-        self.loss_ce = nn.CrossEntropyLoss(label_smoothing=0) #0.2
+        # frequency = np.load('ScanObjectNN-weight.npy')
+        # inverse_weight = (1/frequency)/sum(1/frequency)
+        # manual_weight = torch.Tensor(inverse_weight)
+        # self.loss_ce = nn.CrossEntropyLoss(weight=manual_weight, label_smoothing=0) #0.2
+        self.loss_ce = nn.CrossEntropyLoss()
 
     def get_loss_acc(self, ret, gt):
         loss = self.loss_ce(ret, gt.long())
@@ -767,6 +753,8 @@ class PointTransformer_pointtokenprompt(nn.Module):
 
         neighborhood, center = self.group_divider(pts)
         group_input_tokens = self.encoder(neighborhood)  # B G N
+        
+        level2_neighborhood, level2_center, level1_idx, level2_idx = self.level2_group_divider(center, require_index=True)
 
         cls_tokens = self.cls_token.expand(group_input_tokens.size(0), -1, -1)
         cls_pos = self.cls_pos.expand(group_input_tokens.size(0), -1, -1)
@@ -776,8 +764,8 @@ class PointTransformer_pointtokenprompt(nn.Module):
         x = torch.cat((cls_tokens, group_input_tokens), dim=1)
         pos = torch.cat((cls_pos, pos), dim=1)
         # transformer
-        x = self.blocks(x, pos, global_feature = shape_feature, token_position = token_pos)
+        x = self.blocks(x, pos, global_feature = shape_feature, token_position = token_pos, level1_center=center, level1_index=level1_idx, level2_center=level2_center, level2_index=level2_idx)
         x = self.norm(x)
-        concat_f = torch.cat([x[:, 0], x[:, 1:].max(1)[0]], dim=-1)
+        concat_f = torch.cat([x[:, 0], x[:, 1:].max(1)[0], shape_feature[:,0]], dim=-1)
         ret = self.cls_head_finetune(concat_f)
         return ret

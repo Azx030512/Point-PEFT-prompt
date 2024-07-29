@@ -1,7 +1,7 @@
 optimizer : {
   type: AdamW,
   kwargs: {
-  lr : 0.0016,
+  lr : 0.0005,
   weight_decay : 0.05
 }}
 
@@ -41,7 +41,7 @@ model : {
   perturbation: 0.20,
   point_prompt: True,
   shift_net: True,
-  prompt_depth: 8,
+  prompt_depth: 6,
   scaler: False,
   num_tokens: 10,
 }
@@ -49,5 +49,5 @@ model : {
 npoints: 2048
 total_bs : 32
 step_per_update : 1
-max_epoch : 300
+max_epoch : 400
 grad_norm_clip : 10

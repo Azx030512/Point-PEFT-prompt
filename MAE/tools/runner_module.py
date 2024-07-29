@@ -17,7 +17,7 @@ from tqdm import tqdm
 train_transforms = transforms.Compose(
     [   
         # data_transforms.PointcloudScaleAndTranslate(),
-        data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
+        # data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
         data_transforms.PointcloudRotate(),
         # data_transforms.PointcloudScaleAndTranslate(),
     ]
@@ -95,8 +95,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
         #     print_log(name, logger = logger)
         #     param.requires_grad_(True)
 
-        ## or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name
-        if 'point_prompt' in name or 'shift_net' in name or 'shape_feature_mlp' in name or 'adapter' in name  or 'scaler' in name or  'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "prompt_embeddings" in name or 'prompt_cor' in name : 
+        ## or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'scaler' in name or
+        if 'point_prompt' in name or 'shift_net' in name or 'shape_feature_mlp' in name or 'adapter' in name  or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "prompt_embeddings" in name or 'prompt_cor' in name or 'out_transform' in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name:
             print_log(name, logger = logger)
             param.requires_grad_(True)
         else:

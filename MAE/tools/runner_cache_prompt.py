@@ -15,6 +15,7 @@ from tqdm import tqdm
 train_transforms = transforms.Compose(
     [
          data_transforms.PointcloudScaleAndTranslate(),
+         data_transforms.PointcloudRotate(),
     ]
 )
 
@@ -26,8 +27,8 @@ test_transforms = transforms.Compose(
 
 train_transforms_scan = transforms.Compose(
     [
-        data_transforms.PointcloudScaleAndTranslate(),
-        # data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
+        # data_transforms.PointcloudScaleAndTranslate(),
+        data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
         # data_transforms.PointcloudRotate(),
     ]
 )
@@ -155,7 +156,7 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
             points = pointnet2_utils.gather_operation(points.transpose(1, 2).contiguous(), fps_idx).transpose(1, 2).contiguous()  # (B, N, 3)
             # import pdb; pdb.set_trace()
             if config.model['NAME'] == 'PointTransformer_best': 
-                points = train_transforms_scan(points)
+                points = train_transforms(points)
                 #points = train_transforms(points)
             else:
                 points = train_transforms(points)#data_aug

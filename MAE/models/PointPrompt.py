@@ -46,7 +46,40 @@ def index_points(points, idx):
     new_points = points[batch_indices, idx, :]
     return new_points
 
+def pooling(knn_x_w, transform=None):
+        # Feature Aggregation (Pooling)
+        lc_x = knn_x_w.max(dim=2)[0]
+        if transform is not None:
+            lc_x = transform(lc_x.permute(0, 2, 1)).permute(0,2,1)
+        return lc_x
+    
+def propagate(xyz1, xyz2, points1, points2, de_neighbors=64):
+    """
+    Input:
+        xyz1: input points position data, [B, N, 3]
+        xyz2: sampled input points position data, [B, S, 3]
+        points1: input points data, [B, N, D']
+        points2: input points data, [B, S, D'']
+    Return:
+        new_points: upsampled points data, [B, N, D''']
+    """
 
+    B, N, C = xyz1.shape
+    _, S, _ = xyz2.shape
+
+    dists = square_distance(xyz1, xyz2)
+    dists, idx = dists.sort(dim=-1)
+    dists, idx = dists[:, :, :de_neighbors], idx[:, :, :de_neighbors]  # [B, N, S]
+
+    dist_recip = 1.0 / (dists + 1e-8)
+    norm = torch.sum(dist_recip, dim=2, keepdim=True)
+    weight = dist_recip / norm
+    weight = weight.view(B, N, de_neighbors, 1)
+    interpolated_points = torch.sum(index_points(points2, idx) * weight, dim=2)#B, N, 6, C->B,N,C
+
+    new_points = points1+0.3*interpolated_points # B,N,C
+
+    return new_points
 
 
 class Group(nn.Module):  # FPS + KNN
@@ -56,7 +89,7 @@ class Group(nn.Module):  # FPS + KNN
         self.group_size = group_size
         self.knn = KNN(k=self.group_size, transpose_mode=True)
 
-    def forward(self, xyz):
+    def forward(self, xyz, require_index=False):
         '''
             input: B N 3
             ---------------------------
@@ -82,7 +115,10 @@ class Group(nn.Module):  # FPS + KNN
         neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, 3).contiguous()
         # normalize
         neighborhood = neighborhood - center.unsqueeze(2)
-        return neighborhood, center, idx, center_idx
+        if require_index:
+            return neighborhood, center, idx, center_idx
+        else:
+            return neighborhood, center
 
 
 
@@ -177,7 +213,7 @@ class PointNetSetAbstraction(nn.Module):
             new_points_concat: sample points feature data, [B, D', S]
         """
         B, N, C = xyz.shape
-        neighborhood, center, idx, center_idx = self.group_divider(xyz.float()) #[B, G, n, 3]
+        neighborhood, center, idx, center_idx = self.group_divider(xyz.float(), require_index=True) #[B, G, n, 3]
         new_xyz = center.reshape((B, self.num_group, -1))
         new_points = points.reshape((B*N, -1))[idx].reshape((B, self.num_group, self.group_size, -1))
 

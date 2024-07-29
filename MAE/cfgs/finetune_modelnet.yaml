@@ -20,7 +20,7 @@ dataset : {
   test : { _base_: cfgs/dataset_configs/ModelNet40.yaml,
             others: {subset: 'test'}}}
 model : {
-  NAME: PointTransformer_modelnet,
+  NAME: PointTransformer_best,
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
@@ -34,6 +34,15 @@ model : {
     adapter_dim: 16,
     adapter_drop_path_rate: 0.1,
   },
+  point_number: 20,
+  scale: 0.01,
+  factor: 5,
+  perturbation: 0.20,
+  point_prompt: True,
+  shift_net: True,
+  prompt_depth: 6,
+  scaler: False,
+  num_tokens: 10,
 }
 
 
