@@ -1,7 +1,7 @@
 import os
 os.environ['OMP_NUM_THREADS']='2'
 os.environ['MKL_NUM_THREADS']='2'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 os.environ["CUDA_LAUNCH_BLOCKING"] = '1'
 from tools import pretrain_run_net as pretrain
 from tools import finetune_run_net as finetune
@@ -85,6 +85,7 @@ def main():
     if args.cache_prompt:
         print('prompt tuning starts!')
         # point_prompt(args, config, config_cp, train_writer, val_writer)
+        # Point-PEFT function
         cache_prompt(args, config, config_cp, train_writer, val_writer)
     elif args.test:
         test_net(args, config, config_cp)
@@ -93,6 +94,7 @@ def main():
             # print('finetuning starts!')
             # finetune(args, config, train_writer, val_writer)
             print('module tuning starts!')
+            # Point Prompt function
             module_tune(args, config, train_writer, val_writer)
         else:
             pretrain(args, config, train_writer, val_writer)

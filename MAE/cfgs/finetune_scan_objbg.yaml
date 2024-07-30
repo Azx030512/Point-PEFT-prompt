@@ -20,7 +20,7 @@ dataset : {
   test : { _base_: cfgs/dataset_configs/ScanObjectNN_objectbg.yaml,
             others: {subset: 'test'}}}
 model : {
-  NAME: PointTransformer_pointtokenprompt,
+  NAME: PointTransformer_pointtokenprompt, # PointTransformer_best PointTransformer_pointtokenprompt
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
@@ -43,6 +43,7 @@ model : {
   prompt_depth: 6,
   scaler: False,
   num_tokens: 10,
+  propagation_type: 'permutation_after_attention' # 'replacement_before_attention' 'permutation_before_attention' 'replacement_after_attention' 'permutation_after_attention'
 }
 
 

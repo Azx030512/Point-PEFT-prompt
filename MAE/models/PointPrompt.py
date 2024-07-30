@@ -74,7 +74,7 @@ def propagate(xyz1, xyz2, points1, points2, de_neighbors=64):
     dist_recip = 1.0 / (dists + 1e-8)
     norm = torch.sum(dist_recip, dim=2, keepdim=True)
     weight = dist_recip / norm
-    weight = weight.view(B, N, de_neighbors, 1)
+    weight = weight.view(B, N, -1, 1)
     interpolated_points = torch.sum(index_points(points2, idx) * weight, dim=2)#B, N, 6, C->B,N,C
 
     new_points = points1+0.3*interpolated_points # B,N,C

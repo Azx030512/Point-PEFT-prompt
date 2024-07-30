@@ -43,11 +43,12 @@ model : {
   prompt_depth: 6,
   scaler: False,
   num_tokens: 10,
+  propagation_type: 'permutation_after_attention' # 'replacement_before_attention' 'permutation_before_attention' 'replacement_after_attention' 'permutation_after_attention'
 }
 
 
 npoints: 2048
 total_bs : 32
 step_per_update : 1
-max_epoch : 300
+max_epoch : 400
 grad_norm_clip : 10

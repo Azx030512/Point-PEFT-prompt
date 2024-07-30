@@ -176,22 +176,84 @@ class Block(nn.Module):
             token_prompt = self.prompt_dropout(self.prompt_embeddings.repeat(x.shape[0], 1, 1))
             token_prompt = token_prompt + token_position.repeat(x.shape[0], 1, 1)
             x = torch.cat((x[:,0:1], token_prompt, x[:,1:]), 1)
+
+        propagation_type = 'replacement_after_attention' # 'replacement'
+
+        if self.config.propagation_type == 'permutation_before_attention':
+            B,G,_ = x.shape
+            cls_x = x[:,0:1]
+            x = x[:,1:]
+            G = G-1 # +self.num_tokens
+            propagate_range = level1_center.shape[1]
+            x_neighborhoods = x.reshape(B*G, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
+            x_centers = x.reshape(B*G, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
+            x_neighborhoods = self.drop_path(x_neighborhoods)+x_neighborhoods
+            vis_x = pooling(x_neighborhoods.reshape(B, level2_center.shape[1], -1, self.dim), transform=self.out_transform)+0.3*x_centers
+            x[:,-propagate_range:] = propagate(xyz1=level1_center, xyz2=level2_center, points1=x[:,-propagate_range:], points2=vis_x)
+            x = torch.concat([cls_x,x], dim=1) 
+        elif self.config.propagation_type == 'replacement_before_attention':
+            B,G,_ = x.shape
+            cls_x = x[:,0:1]
+            x = x[:,1:]
+            G = G-1 # +self.num_tokens
+            propagate_range = level1_center.shape[1]
+            if G > propagate_range:
+                token_prompt, x = x[:, :-propagate_range], x[:,-propagate_range:]
+                replace_x = x.clone()
+                x = torch.concat([token_prompt, x], dim=1)
+                # replace_x[:, :self.num_tokens] = token_prompt
+                replace_x[:, -self.num_tokens:] = token_prompt
+                x_neighborhoods = replace_x.reshape(B*propagate_range, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
+                x_centers = replace_x.reshape(B*propagate_range, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
+            else:
+                x_neighborhoods = x.reshape(B*propagate_range, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
+                x_centers = x.reshape(B*propagate_range, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
+             
+            x_neighborhoods = self.drop_path(x_neighborhoods)+x_neighborhoods
+            vis_x = pooling(x_neighborhoods.reshape(B, level2_center.shape[1], -1, self.dim), transform=self.out_transform)+0.3*x_centers
+            # de_neighbors=32 for modelnet40
+            x[:,-propagate_range:] = propagate(xyz1=level1_center, xyz2=level2_center, points1=x[:,-propagate_range:], points2=vis_x) 
+            x = torch.concat([cls_x,x], dim=1) 
+
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-
-        B,G,_ = x.shape
-        cls_x = x[:,0:1]
-        x = x[:,1:]
-        G = G-1 # +self.num_tokens
-    
-        x_neighborhoods = x.reshape(B*G, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
-        x_centers = x.reshape(B*G, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
-        x_neighborhoods = self.drop_path(x_neighborhoods)+x_neighborhoods
-        # x_neighborhoods = self.drop_path(attn1(norm3(x_neighborhoods)))+x_neighborhoods
-        vis_x = pooling(x_neighborhoods.reshape(B, level2_center.shape[1], -1, self.dim), transform=self.out_transform)+0.3*x_centers
-        propagate_range = level1_center.shape[1]
-        x[:,-propagate_range:] = propagate(xyz1=level1_center, xyz2=level2_center, points1=x[:,-propagate_range:], points2=vis_x)
-
+        
+        if self.config.propagation_type == 'permutation_after_attention':
+            B,G,_ = x.shape
+            cls_x = x[:,0:1]
+            x = x[:,1:]
+            G = G-1 # +self.num_tokens
+            propagate_range = level1_center.shape[1]
+            x_neighborhoods = x.reshape(B*G, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
+            x_centers = x.reshape(B*G, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
+            x_neighborhoods = self.drop_path(x_neighborhoods)+x_neighborhoods
+            vis_x = pooling(x_neighborhoods.reshape(B, level2_center.shape[1], -1, self.dim), transform=self.out_transform)+0.3*x_centers
+            x[:,-propagate_range:] = propagate(xyz1=level1_center, xyz2=level2_center, points1=x[:,-propagate_range:], points2=vis_x)
+        elif self.config.propagation_type == 'replacement_after_attention':
+            B,G,_ = x.shape
+            cls_x = x[:,0:1]
+            x = x[:,1:]
+            G = G-1 # +self.num_tokens
+            propagate_range = level1_center.shape[1]
+            if G > propagate_range:
+                token_prompt, x = x[:, :-propagate_range], x[:,-propagate_range:]
+                replace_x = x.clone()
+                x = torch.concat([token_prompt, x], dim=1)
+                # replace_x[:, :self.num_tokens] = token_prompt
+                replace_x[:, -self.num_tokens:] = token_prompt
+                x_neighborhoods = replace_x.reshape(B*propagate_range, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
+                x_centers = replace_x.reshape(B*propagate_range, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
+            else:
+                x_neighborhoods = x.reshape(B*propagate_range, -1)[level1_index, :].reshape(B*level2_center.shape[1], -1, self.dim)
+                x_centers = x.reshape(B*propagate_range, -1)[level2_index, :].reshape(B, level2_center.shape[1], self.dim)
+             
+            x_neighborhoods = self.drop_path(x_neighborhoods)+x_neighborhoods
+            vis_x = pooling(x_neighborhoods.reshape(B, level2_center.shape[1], -1, self.dim), transform=self.out_transform)+0.3*x_centers
+            x[:,-propagate_range:] = propagate(xyz1=level1_center, xyz2=level2_center, points1=x[:,-propagate_range:], points2=vis_x)
+        elif 'before' in self.config.propagation_type:
+            cls_x = x[:,0:1]
+            x = x[:,1:]
+        
         if self.adapter is not None:
             if global_feature is not None and layer_id<6:
                 if self.config.scaler == True:
@@ -652,11 +714,11 @@ class PointTransformer_pointtokenprompt(nn.Module):
                 nn.Linear(self.trans_dim * 3, 256),
                 nn.BatchNorm1d(256),
                 nn.ReLU(inplace=True),
-                nn.Dropout(0.5),
+                nn.Dropout(0.6),
                 nn.Linear(256, 256),
                 nn.BatchNorm1d(256),
                 nn.ReLU(inplace=True),
-                nn.Dropout(0.5),
+                nn.Dropout(0.6),
                 nn.Linear(256, self.cls_dim)
             )
         for layer in self.cls_head_finetune:
@@ -749,7 +811,7 @@ class PointTransformer_pointtokenprompt(nn.Module):
             shape_feature = self.shape_feature_mlp(shape_feature)
             shape_feature = shape_feature[:,None,:]
         if self.point_prompt:
-            pts = self.point_prompt(pts) # [batch_size, 1024+128, 3]
+            pts = self.point_prompt(pts) # [batch_size, 2048+20, 3]
 
         neighborhood, center = self.group_divider(pts)
         group_input_tokens = self.encoder(neighborhood)  # B G N
