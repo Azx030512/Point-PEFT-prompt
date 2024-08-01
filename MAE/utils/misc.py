@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import os
 from collections import abc
 from pointnet2_ops import pointnet2_utils
-
+from utils.logger import print_log
 
 def fps(data, number):
     '''
@@ -246,3 +246,28 @@ def random_dropping(pc, e):
 def random_scale(partial, scale_range=[0.8, 1.2]):
     scale = torch.rand(1).cuda() * (scale_range[1] - scale_range[0]) + scale_range[0]
     return partial * scale
+
+def summary_parameters(model, logger=None):
+    print_log('>> Trainable Parameters:', logger)
+    trainable_paramters = [(str(n), str(v.dtype), str(tuple(v.shape)), str(v.numel()))
+                           for n, v in model.named_parameters() if v.requires_grad]
+    max_lens = [max([len(item) + 4 for item in col]) for col in zip(*trainable_paramters)]
+    raw_format = '|' + '|'.join(['{{:{}s}}'.format(max_len) for max_len in max_lens]) + '|'
+    raw_split = '-' * (sum(max_lens) + len(max_lens) + 1)
+    print_log(raw_split, logger)
+    print_log(raw_format.format('Name', 'Dtype', 'Shape', '#Params'), logger)
+    print_log(raw_split, logger)
+
+    for name, dtype, shape, number in trainable_paramters:
+        print_log(raw_format.format(name, dtype, shape, number), logger)
+        print_log(raw_split, logger)
+
+    num_trainable_params = sum([v.numel() for v in model.parameters() if v.requires_grad])
+    total_params = sum([v.numel() for v in model.parameters()])
+    non_trainable_params = total_params - num_trainable_params
+    print_log('>> {:25s}\t{:.2f}\tM  {:.2f}\tK'.format(
+        '# TrainableParams:', num_trainable_params / (1.0 * 10 ** 6), num_trainable_params / (1.0 * 10 ** 3)), logger)
+    print_log('>> {:25s}\t{:.2f}\tM'.format('# NonTrainableParams:', non_trainable_params / (1.0 * 10 ** 6)), logger)
+    print_log('>> {:25s}\t{:.2f}\tM'.format('# TotalParams:', total_params / (1.0 * 10 ** 6)), logger)
+    print_log('>> {:25s}\t{:.2f}\t%'.format('# TuningRatio:', num_trainable_params / total_params * 100.), logger)
+    print_log('\n', logger)

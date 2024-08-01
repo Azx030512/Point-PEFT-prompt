@@ -21,7 +21,7 @@ dataset : {
             others: {subset: 'test'}}}
 
 model : {
-  NAME: PointTransformer_best, # PointTransformer_best PointTransformer_pointtokenprompt
+  NAME: PointTransformer_pointtokenprompt, # PointTransformer_best PointTransformer_pointtokenprompt
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
@@ -35,7 +35,7 @@ model : {
     adapter_dim: 16,
     adapter_drop_path_rate: 0.1,
   },
-  point_number: 20,
+  point_number: 5,
   scale: 0.01,
   factor: 5,
   perturbation: 0.20,
@@ -44,7 +44,7 @@ model : {
   prompt_depth: 6,
   scaler: False,
   num_tokens: 10,
-  propagation_type: 'permutation_after_attention' # PointTransformer_best PointTransformer_pointtokenprompt
+  propagation_type: 'permutation_after_attention' # PointTransformer_best PointTransformer_pointtokenprompt 
 }
 
 npoints: 2048

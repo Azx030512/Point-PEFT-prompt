@@ -20,7 +20,7 @@ dataset : {
   test : { _base_: cfgs/dataset_configs/ModelNet40.yaml,
             others: {subset: 'test'}}}
 model : {
-  NAME: PointTransformer_pointtokenprompt,
+  NAME: PointTransformer_pointtokenprompt, # PointTransformer_pointtokenprompt PointTransformer_best
   trans_dim: 384,
   depth: 12,
   drop_path_rate: 0.1,
@@ -34,7 +34,7 @@ model : {
     adapter_dim: 16,
     adapter_drop_path_rate: 0.1,
   },
-  point_number: 20,
+  point_number: 5,
   scale: 0.01,
   factor: 5,
   perturbation: 0.20,
@@ -50,5 +50,5 @@ model : {
 npoints: 1024
 total_bs : 32
 step_per_update : 1
-max_epoch : 400
+max_epoch : 300
 grad_norm_clip : 10

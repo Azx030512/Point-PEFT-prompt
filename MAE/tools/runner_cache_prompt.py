@@ -14,8 +14,8 @@ from tqdm import tqdm
 
 train_transforms = transforms.Compose(
     [
-         data_transforms.PointcloudScaleAndTranslate(),
-        #  data_transforms.PointcloudRotate(),
+        #  data_transforms.PointcloudScaleAndTranslate(),
+         data_transforms.PointcloudRotate(),
     ]
 )
 
@@ -107,6 +107,19 @@ def run_net(args, config, config_cp, train_writer=None, val_writer=None):
 
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
     
+    from utils.misc import summary_parameters
+    summary_parameters(base_model, logger=logger)
+
+    from ptflops import get_model_complexity_info
+    flops, params = get_model_complexity_info(cp_model, (2048, 3), as_strings=True, print_per_layer_stat=True)
+    print_log(f"Cache Prompt Model Params: {params}", logger=logger)
+    print_log(f"Cache Prompt Model FLOPs: {flops}", logger=logger)
+
+    flops, params = get_model_complexity_info(base_model, (2048, 3), as_strings=True, print_per_layer_stat=True)
+    print_log(f"Cache Prompt Model Params: {params}", logger=logger)
+    print_log(f"Cache Prompt Model FLOPs: {flops}", logger=logger)
+
+
     if args.resume:
         builder.resume_optimizer(optimizer, args, logger = logger)
 

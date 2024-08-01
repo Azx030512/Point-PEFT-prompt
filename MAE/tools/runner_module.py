@@ -104,6 +104,15 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
 
+    from utils.misc import summary_parameters
+    summary_parameters(base_model, logger=logger)
+
+    from ptflops import get_model_complexity_info
+    flops, params = get_model_complexity_info(base_model, (2048, 3), as_strings=True, print_per_layer_stat=True)
+    print_log(f"Params: {params}", logger=logger)
+    print_log(f"FLOPs: {flops}", logger=logger)
+    
+
     if args.resume:
         builder.resume_optimizer(optimizer, args, logger = logger)
 
