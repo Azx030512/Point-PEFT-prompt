@@ -37,13 +37,13 @@ model : {
   point_number: 5,
   scale: 0.01,
   factor: 5,
-  perturbation: 0.20,
+  perturbation: 0.40,
   point_prompt: True,
   shift_net: True,
   prompt_depth: 6,
   scaler: False,
   num_tokens: 10,
-  propagation_type: 'permutation_after_attention' # PointTransformer_best PointTransformer_pointtokenprompt
+  propagation_type: 'permutation_after_attention' 
 }
 
 

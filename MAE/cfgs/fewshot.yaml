@@ -1,7 +1,7 @@
 optimizer : {
   type: AdamW,
   kwargs: {
-  lr : 0.0010,
+  lr : 0.0005,
   weight_decay : 0.05
 }}
 
@@ -35,7 +35,7 @@ model : {
     adapter_dim: 16,
     adapter_drop_path_rate: 0.1,
   },
-  point_number: 20,
+  point_number: 10,
   scale: 0.01,
   factor: 5,
   perturbation: 0.20,
@@ -44,6 +44,7 @@ model : {
   prompt_depth: 6,
   scaler: False,
   num_tokens: 10,
+propagation_type: 'permutation_after_attention' # 'replacement_before_attention' 'permutation_before_attention' 'replacement_after_attention' 'permutation_after_attention'
 }
 
 npoints: 1024
