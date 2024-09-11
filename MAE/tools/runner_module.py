@@ -16,10 +16,8 @@ from tqdm import tqdm
 
 train_transforms = transforms.Compose(
     [   
-        # data_transforms.PointcloudScaleAndTranslate(),
-        # data_transforms.PointcloudScaleAndTranslate(scale_low=0.9, scale_high=1.1, translate_range=0),
-        data_transforms.PointcloudRotate(),
-        # data_transforms.PointcloudScaleAndTranslate(),
+        data_transforms.PointcloudScaleAndTranslate(),
+        # data_transforms.PointcloudRotate(),
     ]
 )
 
@@ -91,11 +89,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
     
     print_log("Require gradient parameters: ", logger = logger)
     for name, param in base_model.named_parameters():
-        # if 'point_prompt' in name or 'shift_net' in name or 'attn_free_linear' in name or "cp" in name or "adapter1" in name or "norm3" in name or "attn1." in name or  "out_transform" in name or ".adapter." in name or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'prompt_cor' in name or 'cache_gate' in name or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "norm." in name or ".gate" in name or "ad_gate" in name or "prompt_embeddings" in name: 
-        #     print_log(name, logger = logger)
-        #     param.requires_grad_(True)
-
-        ## or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name or 'scaler' in name or
+        
         if 'point_prompt' in name or 'shift_net' in name or 'shape_feature_mlp' in name or 'adapter' in name  or 'cls_pos' in name or 'cls_token' in name or 'cls_head_' in name or "prompt_embeddings" in name or 'prompt_cor' in name or 'out_transform' in name: # or 'proj.bias' in name or 'fc2.bias' in name or 'fc1.bias' in name or 'norm2.bias' in name or 'norm1.bias' in name:
             print_log(name, logger = logger)
             param.requires_grad_(True)
@@ -107,14 +101,16 @@ def run_net(args, config, train_writer=None, val_writer=None):
     from utils.misc import summary_parameters
     summary_parameters(base_model, logger=logger)
 
-    from ptflops import get_model_complexity_info
-    flops, params = get_model_complexity_info(base_model, (2048, 3), as_strings=True, print_per_layer_stat=True)
-    print_log(f"Params: {params}", logger=logger)
-    print_log(f"FLOPs: {flops}", logger=logger)
+    # from ptflops import get_model_complexity_info
+    # flops, params = get_model_complexity_info(base_model, (2048, 3), as_strings=True, print_per_layer_stat=True)
+    # print_log(f"Params: {params}", logger=logger)
+    # print_log(f"FLOPs: {flops}", logger=logger)
     
 
     if args.resume:
         builder.resume_optimizer(optimizer, args, logger = logger)
+
+    # metrics = validate(base_model, test_dataloader, 0, val_writer, args, config, logger=logger)
 
     # trainval
     # training
@@ -247,19 +243,22 @@ def validate(base_model, test_dataloader, epoch, val_writer, args, config, logge
     test_label = []
     npoints = config.npoints
     with torch.no_grad():
-        for idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
+        for batch_idx, (taxonomy_ids, model_ids, data) in enumerate(tqdm(test_dataloader)):
             points = data[0].cuda()
             label = data[1].cuda()
 
             points, idx = misc.fps(points, npoints)
-
-            logits = base_model(points)
+            logits = base_model(points, batch_idx=batch_idx)
             target = label.view(-1)
-
+            visualize = True
+            if visualize == True:
+                task = 'shift'
+                np.save(f'./visualization/{task}/target-{batch_idx}', target.detach().cpu().numpy())
             pred = logits.argmax(-1).view(-1)
 
             test_pred.append(pred.detach())
             test_label.append(target.detach())
+
 
         test_pred = torch.cat(test_pred, dim=0)
         test_label = torch.cat(test_label, dim=0)

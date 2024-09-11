@@ -7,7 +7,7 @@ def get_args():
     parser.add_argument(
         '--config', 
         type = str, 
-        default= 'cfgs/finetune_scan_objonly.yaml',  # ./cfgs/fewshot.yaml  ./cfgs/finetune_scan_hardest.yaml cfgs/finetune_scan_objbg.yaml cfgs/finetune_scan_objonly.yaml cfgs/finetune_modelnet.yaml
+        default= './cfgs/finetune_scan_objonly.yaml',  # ./cfgs/fewshot.yaml  ./cfgs/finetune_scan_hardest.yaml cfgs/finetune_scan_objbg.yaml cfgs/finetune_scan_objonly.yaml cfgs/finetune_modelnet.yaml
         help = 'yaml config file')
     parser.add_argument(
         '--cache_prompt', 
@@ -35,10 +35,10 @@ def get_args():
         default=False, 
         help='whether to use sync bn')
     # some args
-    parser.add_argument('--exp_name', type = str, default='femae-pointprompt-r-learningrate0.0005-per.aft.attn-point5-perta0.4', help = 'experiment name') #femae-pointprompt-r-learningrate0.0005-per.aft.attn-point5
+    parser.add_argument('--exp_name', type = str, default='mae-pointprompt-st-learningrate0.0005-per.aft.attn-point10-perta0.10', help = 'experiment name') #femae-pointprompt-r-learningrate0.0005-per.aft.attn-point5
     parser.add_argument('--loss', type=str, default='cd1', help='loss name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
-    parser.add_argument('--ckpts', type = str, default='./pretrained_bases/femae-epoch-300.pth', help = 'test used ckpt path') #pretrained_bases/mae_base.pth ./pretrained_bases/recon_base.pth  ./pretrained_bases/femae-epoch-300.pth
+    parser.add_argument('--ckpts', type = str, default='pretrained_bases/mae_base.pth', help = 'test used ckpt path') #pretrained_bases/mae_base.pth ./pretrained_bases/recon_base.pth  ./pretrained_bases/femae-epoch-300.pth
     parser.add_argument('--val_freq', type = int, default=1, help = 'test freq')
     parser.add_argument(
         '--vote',

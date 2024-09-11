@@ -243,8 +243,8 @@ class PointNetFeaturePropagation(nn.Module):
     def forward(self, xyz1, xyz2, points1, points2):
         """
         Input:
-            xyz1: input points position data, [B, N, C]
-            xyz2: sampled input points position data, [B, S, C]
+            xyz1: input points position data, [B, N, C] 64
+            xyz2: sampled input points position data, [B, S, C] 1024
             points1: input points data, [B, N, D]
             points2: input points data, [B, S, D]
         Return:

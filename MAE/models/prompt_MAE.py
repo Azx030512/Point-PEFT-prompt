@@ -118,7 +118,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, require_attn = False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
@@ -130,6 +130,8 @@ class Attention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
+        if require_attn:
+            return x, attn
         return x
 
 
@@ -156,15 +158,15 @@ class Block(nn.Module):
         self.num_tokens = num_tokens
         self.prompt_embeddings = nn.Parameter(torch.zeros(self.num_tokens, dim))
         self.adapter=None
-        self.scaler1 = nn.Parameter(torch.ones([1])*0.3)
-        self.scaler2 = nn.Parameter(torch.ones([1])*0.3)
+        self.scaler1 = nn.Parameter(torch.ones([1])*0.5)
+        self.scaler2 = nn.Parameter(torch.ones([1])*0.5)
         self.adapter = Adapter(embed_dims=dim, reduction_dims=16)
         self.out_transform = nn.Sequential(
                                 nn.BatchNorm1d(dim),
                                 nn.GELU()
                             )
 
-    def forward(self, x, global_feature=None, token_position=None, layer_id=None, level1_center=None, level1_index=None, level2_center=None, level2_index=None):
+    def forward(self, x, global_feature=None, token_position=None, layer_id=None, level1_center=None, level1_index=None, level2_center=None, level2_index=None, batch_idx=None):
         if global_feature is not None and layer_id<self.config.prompt_depth:
             token_prompt = self.prompt_dropout(self.prompt_embeddings.repeat(x.shape[0], 1, 1))
             if self.config.scaler == True:
@@ -217,6 +219,15 @@ class Block(nn.Module):
 
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+        # visualization = False
+        # if visualization:
+        #     if layer_id == 11:
+        #         _, attn_weight = self.attn(self.norm1(x), require_attn=True)
+        #         task = 'attention'
+        #         import os
+        #         os.makedirs(f'./visualization/{task}',exist_ok=True)
+        #         np.save(f'./visualization/{task}/attn-weight-{batch_idx}', attn_weight.detach().cpu().numpy())
         
         if self.config.propagation_type == 'permutation_after_attention':
             B,G,_ = x.shape
@@ -284,12 +295,12 @@ class TransformerEncoder(nn.Module):
                 )
             for i in range(depth)])
 
-    def forward(self, x, pos, global_feature=None, token_position=None, level1_center=None, level1_index=None, level2_center=None, level2_index=None):
+    def forward(self, x, pos, global_feature=None, token_position=None, level1_center=None, level1_index=None, level2_center=None, level2_index=None, batch_idx=None):
         for idx, block in enumerate(self.blocks):
             if idx < self.config.prompt_depth and token_position is not None:
                 x = block(x + pos, global_feature=global_feature, token_position=token_position, layer_id=idx, level1_center=level1_center, level1_index=level1_index, level2_center=level2_center, level2_index=level2_index)
             else:
-                x = block(x + pos, layer_id=idx, level1_center=level1_center, level1_index=level1_index, level2_center=level2_center, level2_index=level2_index)
+                x = block(x + pos, layer_id=idx, level1_center=level1_center, level1_index=level1_index, level2_center=level2_center, level2_index=level2_index, batch_idx=batch_idx)
         return x
 
 
@@ -804,16 +815,43 @@ class PointTransformer_pointtokenprompt(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, pts):
+    def forward(self, pts, batch_idx=None):
+        visualize = False
+
         shape_feature = None
         if self.shift_net:
+            if visualize == True:
+                task='shift'
+                import os
+                os.makedirs(f'./visualization/{task}',exist_ok=True)
+                np.save(f'./visualization/{task}/before_points-{batch_idx}', pts.detach().cpu().numpy())
             pts, shape_feature = self.shift_net(pts, require_global_feature=True)
             shape_feature = self.shape_feature_mlp(shape_feature)
+
+            if visualize == True:
+                task='shift'
+                import os
+                os.makedirs(f'./visualization/{task}',exist_ok=True)
+                np.save(f'./visualization/{task}/after_points-{batch_idx}', pts.detach().cpu().numpy())
+                
+                np.save(f'./visualization/{task}/shape_feature-{batch_idx}', shape_feature.detach().cpu().numpy())
             shape_feature = shape_feature[:,None,:]
         if self.point_prompt:
             pts = self.point_prompt(pts) # [batch_size, 2048+20, 3]
 
+            if visualize == True:
+                task='attention'
+                import os
+                os.makedirs(f'./visualization/{task}',exist_ok=True)
+                np.save(f'./visualization/{task}/prompt-{batch_idx}', self.point_prompt.points.detach().cpu().numpy())
+
         neighborhood, center = self.group_divider(pts)
+
+        if visualize == True:
+            np.save(f'./visualization/{task}/center-{batch_idx}', center.detach().cpu().numpy())
+            np.save(f'./visualization/{task}/neighborhood-{batch_idx}', neighborhood.detach().cpu().numpy())
+            # np.save(f'./visualization/{task}/prompt-{batch_idx}', self.point_prompt.points.detach().cpu().numpy())
+
         group_input_tokens = self.encoder(neighborhood)  # B G N
         
         level2_neighborhood, level2_center, level1_idx, level2_idx = self.level2_group_divider(center, require_index=True)
@@ -826,7 +864,7 @@ class PointTransformer_pointtokenprompt(nn.Module):
         x = torch.cat((cls_tokens, group_input_tokens), dim=1)
         pos = torch.cat((cls_pos, pos), dim=1)
         # transformer
-        x = self.blocks(x, pos, global_feature = shape_feature, token_position = token_pos, level1_center=center, level1_index=level1_idx, level2_center=level2_center, level2_index=level2_idx)
+        x = self.blocks(x, pos, global_feature = shape_feature, token_position = token_pos, level1_center=center, level1_index=level1_idx, level2_center=level2_center, level2_index=level2_idx, batch_idx=batch_idx)
         x = self.norm(x)
         concat_f = torch.cat([x[:, 0], x[:, 1:].max(1)[0], shape_feature[:,0]], dim=-1)
         ret = self.cls_head_finetune(concat_f)
